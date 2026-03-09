@@ -1,10 +1,10 @@
 """Persistence layer for completed assessments."""
 
 from datetime import datetime
-from src.e2caf_client import E2CAFClient
+from src.tmm_client import TMMClient
 
 
-def save_assessment(client: E2CAFClient, session: dict) -> int:
+def save_assessment(client: TMMClient, session: dict) -> int:
     """
     Persists a completed assessment to the database.
     Creates or reuses a Client record.
@@ -131,7 +131,7 @@ def _risk(score) -> str:
 
 
 def save_findings(
-    client: E2CAFClient,
+    client: TMMClient,
     assessment_id: int,
     cap_scores: list[dict],
     dom_scores: list[dict],
@@ -198,7 +198,7 @@ def save_findings(
         )
 
 
-def list_assessments(client: E2CAFClient) -> list[dict]:
+def list_assessments(client: TMMClient) -> list[dict]:
     """Return a summary list of all assessments, newest first."""
     res = client.query("""
         SELECT a.id, c.client_name, a.engagement_name, a.use_case_name,
@@ -210,7 +210,7 @@ def list_assessments(client: E2CAFClient) -> list[dict]:
     return res.get("rows", [])
 
 
-def load_assessment(client: E2CAFClient, assessment_id: int):
+def load_assessment(client: TMMClient, assessment_id: int):
     """
     Load a complete assessment from the database.
     Returns a dict with keys: assessment, capabilities, responses.

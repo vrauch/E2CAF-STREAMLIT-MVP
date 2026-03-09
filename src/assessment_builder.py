@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import re
 
-from src.e2caf_client import E2CAFClient
+from src.tmm_client import TMMClient
 
 @dataclass
 class CapabilityResult:
@@ -133,7 +133,7 @@ def analyze_use_case_readonly(
     core_k: int = 10,
 ) -> tuple:
     """
-    Reads E2CAF capabilities, uses AI to rank by intent,
+    Reads TMM capabilities, uses AI to rank by intent,
     expands upstream/downstream via dependency graph.
     Returns: candidates, core, upstream, downstream, domains_covered, cap_count
     """
@@ -141,7 +141,7 @@ def analyze_use_case_readonly(
     from dotenv import load_dotenv
     load_dotenv()
 
-    # ── 1. Load full capability library from E2CAF ──
+    # ── 1. Load full capability library from TMM ──
     res = client.query("""
         SELECT
             nc.id            AS capability_id,

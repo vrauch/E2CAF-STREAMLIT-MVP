@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Default DB path — testers get this automatically; local dev overrides via .env
-ENV E2CAF_DB_PATH=/app/data/e2caf.db
+ENV TMM_DB_PATH=/app/data/e2caf.db
 
 # Mount point for optional local volume override
 RUN mkdir -p /data

@@ -11,7 +11,7 @@ load_dotenv()
 DEFAULT_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
 
 @dataclass
-class E2CAFClient:
+class TMMClient:
     db_path: str
 
     def query(self, sql: str, params: list = None) -> dict:
@@ -62,16 +62,16 @@ class E2CAFClient:
             return {"rowcount": 0, "error": str(e)}
 
 
-def get_client() -> E2CAFClient:
-    db_path = os.getenv("E2CAF_DB_PATH")
+def get_client() -> TMMClient:
+    db_path = os.getenv("TMM_DB_PATH")
     if not db_path:
         raise ValueError(
-            "E2CAF_DB_PATH not set in environment. "
+            "TMM_DB_PATH not set in environment. "
             "Add it to your .env file pointing to your SQLite database."
         )
     if not os.path.exists(db_path):
         raise FileNotFoundError(
             f"SQLite database not found at: {db_path}\n"
-            "Check your E2CAF_DB_PATH in .env"
+            "Check your TMM_DB_PATH in .env"
         )
-    return E2CAFClient(db_path=db_path)
+    return TMMClient(db_path=db_path)

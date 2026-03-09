@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-from src.e2caf_client import get_client
+from src.tmm_client import get_client
 from src.assessment_builder import analyze_use_case_readonly, CapabilityResult
 from src.assessment_store import save_assessment, save_findings, list_assessments, load_assessment
 from src.question_generator import generate_questions_for_capability
@@ -571,13 +571,13 @@ def render():
         st.subheader("Step 2 — Capability discovery (Core / Upstream / Downstream)")
         st.markdown(
             "Set the number of core capabilities and click **Run Capability Discovery**. "
-            "The AI will analyse your intent against the E2CAF library and classify capabilities "
+            "The AI will analyse your intent against the TMM library and classify capabilities "
             "as Core, Upstream, or Downstream. Review the results, then continue to set domain targets."
         )
         st.write(f"**Use case:** {st.session_state.use_case_name}")
         st.write(f"**Intent:** {st.session_state.intent_text}")
 
-        st.info("This step reads from E2CAF only (no writes).")
+        st.info("This step reads from TMM only (no writes).")
 
         colA, colB = st.columns(2)
         with colA:
@@ -592,7 +592,7 @@ def render():
                 intent_text=st.session_state.intent_text,
                 core_k=core_k,
             )
-            st.caption(f"Capability library size (from E2CAF): {cap_count}")
+            st.caption(f"Capability library size (from TMM): {cap_count}")
 
             # Store results for later steps
             st.session_state.core_caps = [c.__dict__ for c in core]
