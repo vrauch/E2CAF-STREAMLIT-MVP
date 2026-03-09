@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 
 from src.tmm_client import get_client
@@ -1131,6 +1132,16 @@ def render():
 
         st.divider()
 
+        # ── Maturity Heatmap ──
+        st.markdown("### Maturity Heatmap")
+        from src.heatmap import render_heatmap_html, generate_heatmap_excel
+        heatmap_html = render_heatmap_html(dom_scores.to_dict(orient="records"))
+        n_domains    = len(dom_scores)
+        heatmap_h    = max(320, 140 + n_domains * 6)   # rough height estimate
+        components.html(heatmap_html, height=heatmap_h, scrolling=True)
+
+        st.divider()
+
         # ── Domain scores ──
         st.markdown("### Domain scores")
         st.dataframe(dom_scores, width='stretch')
@@ -1195,7 +1206,7 @@ def render():
 
         # ── Exports ──
         st.markdown("### Export")
-        col_a, col_b, col_c = st.columns(3)
+        col_a, col_b, col_c, col_d = st.columns(4)
 
         with col_a:
             st.download_button(
@@ -1217,6 +1228,19 @@ def render():
                 data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"{st.session_state.use_case_name}_responses.csv".replace(" ", "_"),
                 mime="text/csv",
+            )
+        with col_d:
+            excel_bytes = generate_heatmap_excel(
+                dom_scores.to_dict(orient="records"),
+                client_name=st.session_state.get("client_name", ""),
+                engagement_name=st.session_state.get("engagement_name", ""),
+                use_case_name=st.session_state.use_case_name,
+            )
+            st.download_button(
+                "Download Heatmap (Excel)",
+                data=excel_bytes,
+                file_name=f"{st.session_state.use_case_name}_maturity_heatmap.xlsx".replace(" ", "_"),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
         st.divider()
