@@ -127,6 +127,9 @@ def generate_findings_narrative(
     capability_scores: list[dict],
     high_risk_caps: list[dict],
     top_gaps: list[dict],
+    client_name: str = "",
+    client_industry: str = "",
+    client_country: str = "",
 ) -> str:
     """
     Uses Claude to generate a contextual executive findings narrative
@@ -152,11 +155,22 @@ def generate_findings_narrative(
     cap_count = len(capability_scores)
     domain_count = len(domain_scores)
 
+    client_context = ""
+    if client_name or client_industry or client_country:
+        parts = []
+        if client_name:
+            parts.append(f"CLIENT: {client_name}")
+        if client_industry:
+            parts.append(f"INDUSTRY: {client_industry}")
+        if client_country:
+            parts.append(f"COUNTRY / MARKET: {client_country}")
+        client_context = "\n".join(parts) + "\n"
+
     prompt = f"""You are a senior enterprise transformation consultant writing an executive assessment findings report.
 
 The following capability assessment has been completed:
 
-USE CASE: {use_case_name}
+{client_context}USE CASE: {use_case_name}
 INTENT: {intent_text}
 OVERALL MATURITY SCORE: {overall_score}/5
 CAPABILITIES ASSESSED: {cap_count}
@@ -172,14 +186,15 @@ TOP CAPABILITY GAPS (largest gap to target of 3):
 {gap_summary}
 
 Write a professional executive summary of 3–4 paragraphs that:
-1. Opens with an overall assessment of maturity relative to the use case intent
-2. Highlights the strongest and weakest domains with specific observations
-3. Calls out high-risk capabilities and what this means for the transformation
-4. Closes with 3 prioritised recommendations for immediate action
+1. Opens with an overall assessment of maturity relative to the use case intent, grounded in the client's industry and country context where relevant
+2. Highlights the strongest and weakest domains with specific observations relevant to a {client_industry or "enterprise"} organisation operating in {client_country or "their market"}
+3. Calls out high-risk capabilities and what this means for the transformation given the client's industry dynamics
+4. Closes with 3 prioritised recommendations for immediate action, informed by typical pressures and constraints faced by {client_industry or "enterprise"} organisations in {client_country or "this market"}
 
 Write in a direct, professional consulting tone suitable for a CIO or executive sponsor.
 Do not use bullet points — write in flowing paragraphs.
 Do not repeat the raw numbers mechanically — interpret what they mean.
+Ground observations in the client's specific industry and market context — avoid generic advice.
 """
 
     response = _call_with_retry(
@@ -273,13 +288,13 @@ def generate_gap_recommendations(
     framework_phase: int | None,
     client_industry: str,
     intent_text: str,
+    client_country: str = "",
 ) -> dict:
     """
     Generates a structured gap-closure recommendation for a single capability.
 
     Returns a dict with keys:
-        recommended_actions, enabling_dependencies, success_indicators,
-        hpe_relevance, narrative
+        recommended_actions, enabling_dependencies, success_indicators, narrative
     """
     client = get_ai_client()
 
@@ -304,7 +319,7 @@ def generate_gap_recommendations(
         else "No framework phase constraint applies."
     )
 
-    prompt = f"""You are a senior HPE enterprise transformation consultant writing a structured capability gap recommendation.
+    prompt = f"""You are a senior enterprise transformation consultant writing a structured capability gap recommendation.
 
 CAPABILITY: {capability_name}
 DOMAIN: {domain}
@@ -314,6 +329,7 @@ TARGET MATURITY LEVEL: L{target_maturity}
 GAP: {gap:.1f}
 PRIORITY TIER: {priority_tier}  (P1=Phase 1 Foundation, P2=Phase 2 Acceleration, P3=Phase 3 Optimisation)
 CLIENT INDUSTRY: {client_industry or "Enterprise"}
+CLIENT COUNTRY / MARKET: {client_country or "Not specified"}
 TRANSFORMATION INTENT: {intent_text}
 {phase_hint}
 
@@ -329,7 +345,7 @@ ASSESSMENT RESPONSES FOR THIS CAPABILITY:
 FOUNDATIONAL CAPABILITIES THAT MUST BE IN PLACE FIRST:
 {dep_block}
 
-Based on the above, generate a precise, actionable recommendation. Do NOT use generic maturity advice — ground every action in the actual responses and level descriptors provided.
+Based on the above, generate a precise, actionable recommendation. Do NOT use generic maturity advice — ground every action in the actual responses, level descriptors, and the client's industry and country context provided.
 
 Return ONLY a valid JSON object with no preamble, no markdown, no explanation:
 {{
@@ -345,15 +361,15 @@ Return ONLY a valid JSON object with no preamble, no markdown, no explanation:
     "<measurable outcome 1 — specific, not generic>",
     "<measurable outcome 2>"
   ],
-  "hpe_relevance": "<1-2 sentences on which HPE service lines or offerings are directly relevant to closing this gap>",
-  "narrative": "<2-3 sentence recommendation paragraph written for a CIO or executive sponsor, explaining why this gap matters and what the recommended path forward is>"
+  "narrative": "<2-3 sentence recommendation paragraph written for a CIO or executive sponsor, explaining why this gap matters in the context of the client's industry and market, and what the recommended path forward is>"
 }}
 
 Rules:
-- recommended_actions: 3–5 concrete actions, ordered from foundational to advanced
+- recommended_actions: 3–5 concrete actions, ordered from foundational to advanced, informed by the client's industry and country context
 - If foundational dependencies exist, the first action must address them
 - enabling_dependencies: only list capabilities (from the foundational deps provided) that truly block progress; leave empty array if none
-- success_indicators: measurable, time-bound where possible
+- success_indicators: measurable, time-bound where possible, relevant to the client's industry
+- narrative: explicitly reference the client's industry and/or market dynamics where they affect urgency or approach
 - Do not repeat the raw scores — interpret what they mean
 """
 
@@ -383,6 +399,9 @@ def generate_roadmap_plan(
     horizon_months: int = 6,
     scope: str = "Core",
     recommendations: list[dict] | None = None,
+    client_name: str = "",
+    client_industry: str = "",
+    client_country: str = "",
 ) -> dict:
     """
     Calls Claude to generate a structured gap-closure roadmap.
@@ -396,6 +415,9 @@ def generate_roadmap_plan(
         overall_score: Overall maturity score (1–5).
         horizon_months: Transformation horizon in months.
         scope: Which capability roles to include ("Core", "Core + Upstream", "All").
+        client_name: Client organisation name for contextualisation.
+        client_industry: Client industry for contextualisation.
+        client_country: Client country / market for contextualisation.
 
     Returns:
         Roadmap dict matching the schema expected by src/roadmap.py.
@@ -464,11 +486,22 @@ def generate_roadmap_plan(
         rec_block = ""
         phase_rule = "- Assign capabilities to phases based on gap size and dependency order"
 
+    roadmap_client_ctx = ""
+    if client_name or client_industry or client_country:
+        parts = []
+        if client_name:
+            parts.append(f"CLIENT: {client_name}")
+        if client_industry:
+            parts.append(f"INDUSTRY: {client_industry}")
+        if client_country:
+            parts.append(f"COUNTRY / MARKET: {client_country}")
+        roadmap_client_ctx = "\n".join(parts) + "\n"
+
     prompt = f"""You are a senior enterprise transformation consultant.
 
 A capability maturity assessment has been completed:
 
-USE CASE: {use_case_name}
+{roadmap_client_ctx}USE CASE: {use_case_name}
 INTENT: {intent_text}
 OVERALL MATURITY: {overall_score}/5
 HORIZON: {horizon_months} months ({total_weeks} weeks)
@@ -485,6 +518,7 @@ Design a prioritised gap-closure roadmap with:
 - Each phase: 3–6 domain-level initiatives (grouped themes, NOT individual tasks)
 - Total timeline = {total_weeks} weeks
 - Phases should overlap by 2–4 weeks to enable smooth transitions
+- Initiative names, narratives, and sequencing should reflect the realities of a {client_industry or "enterprise"} organisation operating in {client_country or "their market"} — reference relevant industry drivers, regulatory context, or market pressures where they affect priority or timing
 {phase_rule}
 
 Return ONLY a valid JSON object with this exact structure (no markdown, no preamble, no explanation):

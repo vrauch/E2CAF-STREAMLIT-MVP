@@ -1232,6 +1232,9 @@ def render():
                         capability_scores=cap_scores.to_dict(orient="records"),
                         high_risk_caps=high_risk[["capability_name", "domain", "capability_role", "avg_score"]].to_dict(orient="records"),
                         top_gaps=top_gaps[["capability_name", "domain", "gap"]].to_dict(orient="records"),
+                        client_name=st.session_state.get("client_name", ""),
+                        client_industry=st.session_state.get("client_industry", ""),
+                        client_country=st.session_state.get("client_country", ""),
                     )
                     st.session_state.findings_narrative = narrative
                 except Exception as e:
@@ -1381,20 +1384,70 @@ def render():
                 st.session_state.recommendations = recs
 
         # ── Generation controls ───────────────────────────────────────────────
-        gap_count = sum(1 for c in cap_scores_5b if (c.get("gap") or 0) > 0)
-        max_caps = min(gap_count, 20)
+        gap_caps_5b = [c for c in cap_scores_5b if (c.get("gap") or 0) > 0]
+        gap_count = len(gap_caps_5b)
 
         with st.container(border=True):
             st.markdown("#### Recommendation settings")
-            col_r1, col_r2 = st.columns([2, 1])
-            with col_r1:
-                st.caption(
-                    f"{gap_count} capabilities have gaps. "
-                    f"Up to {max_caps} will be analysed (largest gaps first, Core prioritised)."
+
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                scope_opts = ["All priorities", "P1 only", "P1 + P2"]
+                scope_sel = st.radio(
+                    "Priority scope",
+                    scope_opts,
+                    horizontal=True,
+                    key="rec_scope_sel",
+                    help="Pre-filter which priority tiers to generate recommendations for.",
                 )
+
+            # Pre-filter by selected priority scope.
+            # Priority is determined by the same logic as the engine, so compute tiers here.
+            def _preview_tier(c):
+                g = float(c.get("gap") or 0)
+                role = c.get("capability_role", "")
+                if g >= 2.0 or (role == "Core" and g >= 1.5):
+                    return "P1"
+                if g >= 1.0:
+                    return "P2"
+                return "P3"
+
+            if scope_sel == "P1 only":
+                eligible_caps = [c for c in gap_caps_5b if _preview_tier(c) == "P1"]
+            elif scope_sel == "P1 + P2":
+                eligible_caps = [c for c in gap_caps_5b if _preview_tier(c) in ("P1", "P2")]
+            else:
+                eligible_caps = gap_caps_5b
+
+            eligible_count = len(eligible_caps)
+
+            with col_s2:
+                if eligible_count == 0:
+                    st.caption("No capabilities match the selected scope.")
+                    max_caps = 0
+                elif eligible_count == 1:
+                    max_caps = 1
+                    st.caption("1 capability in scope — all will be analysed.")
+                else:
+                    max_caps = st.slider(
+                        "Number of capabilities to analyse",
+                        min_value=1,
+                        max_value=eligible_count,
+                        value=min(eligible_count, 20),
+                        key="rec_max_caps_slider",
+                        help="Capabilities are ranked by gap size (largest first), Core role prioritised.",
+                    )
+
+            st.caption(
+                f"{gap_count} total gap capabilities · "
+                f"{eligible_count} in scope · "
+                f"{max_caps} will be analysed."
+            )
+
+            col_r1, col_r2 = st.columns([3, 1])
             with col_r2:
                 run_label = "Regenerate" if recs else "Generate Recommendations"
-                run_btn = st.button(run_label, type="primary")
+                run_btn = st.button(run_label, type="primary", disabled=(max_caps == 0))
 
         if run_btn:
             st.session_state.recommendations = None
@@ -1414,12 +1467,13 @@ def render():
                 recs = build_recommendations(
                     db=db,
                     assessment_id=assessment_id or 0,
-                    cap_scores=cap_scores_5b,
+                    cap_scores=eligible_caps,  # already filtered by scope
                     client_industry=st.session_state.get("client_industry", ""),
                     intent_text=st.session_state.get("intent_text", ""),
                     usecase_id=st.session_state.get("selected_usecase_id"),
                     max_caps=max_caps,
                     on_progress=_on_progress,
+                    client_country=st.session_state.get("client_country", ""),
                 )
                 st.session_state.recommendations = recs
                 if assessment_id:
@@ -1478,8 +1532,6 @@ def render():
                         st.markdown("**Success indicators:**")
                         for ind in rec["success_indicators"]:
                             st.markdown(f"- {ind}")
-                    if rec.get("hpe_relevance"):
-                        st.info(f"**HPE relevance:** {rec['hpe_relevance']}")
 
             # Export
             st.divider()
@@ -1491,7 +1543,7 @@ def render():
                 _fields = [
                     "capability_name", "domain", "capability_role", "current_score",
                     "target_maturity", "gap", "priority_tier", "effort_estimate",
-                    "narrative", "hpe_relevance",
+                    "narrative",
                 ]
                 _writer = csv.DictWriter(_csv_buf, fieldnames=_fields, extrasaction="ignore")
                 _writer.writeheader()
@@ -1639,6 +1691,9 @@ def render():
                                 horizon_months=horizon_months,
                                 scope=roadmap_scope,
                                 recommendations=recs_for_roadmap,
+                                client_name=st.session_state.get("client_name", ""),
+                                client_industry=st.session_state.get("client_industry", ""),
+                                client_country=st.session_state.get("client_country", ""),
                             )
                             st.session_state.roadmap_data = roadmap
                         except Exception as e:

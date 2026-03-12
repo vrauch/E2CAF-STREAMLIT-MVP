@@ -139,7 +139,8 @@ def build_recommendations(
     intent_text: str,
     usecase_id: int | None = None,
     max_caps: int = 20,
-    on_progress: callable | None = None,
+    on_progress=None,
+    client_country: str = "",
 ) -> list[dict]:
     """
     For each gap capability (up to max_caps), assembles DB context and calls AI
@@ -156,6 +157,7 @@ def build_recommendations(
         usecase_id:       FK to Next_UseCase (None for custom assessments).
         max_caps:         Maximum number of capabilities to process (bounds AI cost).
         on_progress:      Optional callback(current_idx, total, cap_name) for UI updates.
+        client_country:   Client country / market for AI context.
 
     Returns:
         List of recommendation dicts, one per processed capability, sorted P1 → P3.
@@ -218,6 +220,7 @@ def build_recommendations(
                 framework_phase=framework_phase,
                 client_industry=client_industry,
                 intent_text=intent_text,
+                client_country=client_country,
             )
 
             results.append(
