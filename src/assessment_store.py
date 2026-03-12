@@ -1,5 +1,6 @@
 """Persistence layer for completed assessments."""
 
+import json
 from datetime import datetime
 from src.tmm_client import TMMClient
 
@@ -196,6 +197,83 @@ def save_findings(
             """,
             rows,
         )
+
+
+def save_recommendations(
+    client: TMMClient,
+    assessment_id: int,
+    recommendations: list[dict],
+) -> None:
+    """
+    Persists AI-generated recommendations for an assessment.
+    Idempotent — clears existing rows then re-inserts.
+    JSON-encodes list fields before storage.
+    """
+    client.write(
+        "DELETE FROM AssessmentRecommendation WHERE assessment_id = ?",
+        [assessment_id],
+    )
+
+    if not recommendations:
+        return
+
+    rows = [
+        (
+            assessment_id,
+            r.get("capability_id"),
+            r.get("capability_name"),
+            r.get("domain"),
+            r.get("capability_role"),
+            r.get("current_score"),
+            r.get("target_maturity"),
+            r.get("gap"),
+            r.get("priority_tier"),
+            r.get("effort_estimate"),
+            json.dumps(r.get("recommended_actions") or []),
+            json.dumps(r.get("enabling_dependencies") or []),
+            json.dumps(r.get("success_indicators") or []),
+            r.get("hpe_relevance"),
+            r.get("narrative"),
+            datetime.now().isoformat(),
+        )
+        for r in recommendations
+    ]
+
+    client.write_many(
+        """
+        INSERT INTO AssessmentRecommendation
+            (assessment_id, capability_id, capability_name, domain, capability_role,
+             current_score, target_maturity, gap, priority_tier, effort_estimate,
+             recommended_actions, enabling_dependencies, success_indicators,
+             hpe_relevance, narrative, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def load_recommendations(client: TMMClient, assessment_id: int) -> list[dict]:
+    """
+    Loads persisted recommendations for an assessment.
+    JSON-decodes list fields back to Python lists.
+    Returns empty list if none exist.
+    """
+    res = client.query(
+        """
+        SELECT * FROM AssessmentRecommendation
+        WHERE assessment_id = ?
+        ORDER BY
+            CASE priority_tier WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 4 END,
+            gap DESC
+        """,
+        [assessment_id],
+    )
+    rows = res.get("rows", [])
+    for r in rows:
+        r["recommended_actions"] = json.loads(r.get("recommended_actions") or "[]")
+        r["enabling_dependencies"] = json.loads(r.get("enabling_dependencies") or "[]")
+        r["success_indicators"] = json.loads(r.get("success_indicators") or "[]")
+    return rows
 
 
 def list_assessments(client: TMMClient) -> list[dict]:

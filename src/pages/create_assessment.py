@@ -273,6 +273,7 @@ def render():
     st.session_state.setdefault("roadmap_horizon_months", 6)
     st.session_state.setdefault("roadmap_scope", "Core")
     st.session_state.setdefault("responses_ai_scored", False)
+    st.session_state.setdefault("recommendations", None)
 
     # -------------------------
     # STEP 1
@@ -1287,7 +1288,7 @@ def render():
         st.divider()
 
         # ── Navigation ──
-        col_nav_a, col_nav_b = st.columns([1, 1])
+        col_nav_a, col_nav_b, col_nav_c = st.columns([1, 1, 1])
         with col_nav_a:
             if st.button("Start New Assessment"):
                 for k in ["use_case_name", "intent_text", "client_name", "engagement_name",
@@ -1296,13 +1297,14 @@ def render():
                           "questions", "responses", "findings_narrative", "domain_targets",
                           "assessment_id", "findings_saved",
                           "assessment_mode", "selected_usecase_id", "show_new_form",
-                          "roadmap_data", "responses_ai_scored"]:
+                          "roadmap_data", "responses_ai_scored", "recommendations"]:
                     if k in ["use_case_name", "intent_text", "client_name", "engagement_name",
                              "client_industry", "client_sector", "client_country"]:
                         st.session_state[k] = ""
                     elif k == "responses":
                         st.session_state[k] = {}
-                    elif k in ("findings_narrative", "assessment_id", "roadmap_data"):
+                    elif k in ("findings_narrative", "assessment_id", "roadmap_data",
+                               "recommendations"):
                         st.session_state[k] = None
                     elif k in ("findings_saved", "responses_ai_scored"):
                         st.session_state[k] = False
@@ -1317,6 +1319,205 @@ def render():
                 st.session_state.wizard_step = 1
                 st.rerun()
         with col_nav_b:
+            if st.button("Generate Recommendations →", type="primary"):
+                st.session_state.wizard_step = "5b"
+                st.rerun()
+        with col_nav_c:
+            if st.button("Skip to Roadmap →"):
+                st.session_state.wizard_step = 6
+                st.rerun()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 5b — Gap Recommendations
+    # ─────────────────────────────────────────────────────────────────────────
+    if st.session_state.wizard_step == "5b":
+        st.subheader("Step 5b — Gap Recommendations")
+        st.caption(
+            "AI-generated per-capability recommendations grounded in E2CAF maturity "
+            "descriptors, actual assessment responses, and dependency context."
+        )
+
+        from src.recommendation_engine import build_recommendations
+        from src.assessment_store import save_recommendations, load_recommendations
+        import json as _json
+
+        db = get_client()
+        assessment_id = st.session_state.get("assessment_id")
+
+        # ── Recompute cap_scores (same logic as Step 5) ───────────────────────
+        responses = st.session_state.get("responses", {})
+        if not responses:
+            st.warning("No responses found. Please complete Step 4 first.")
+            if st.button("← Back to Findings"):
+                st.session_state.wizard_step = 5
+                st.rerun()
+            st.stop()
+
+        scored_vals = [v for v in responses.values() if v.get("score") is not None]
+        if not scored_vals:
+            st.warning("No scored responses found — return to Step 5 and complete scoring.")
+            if st.button("← Back to Findings", key="5b_back_no_scores"):
+                st.session_state.wizard_step = 5
+                st.rerun()
+            st.stop()
+
+        import pandas as _pd
+        _df = _pd.DataFrame(scored_vals)
+        _cap_agg = (
+            _df.groupby(["capability_id", "capability_name", "domain", "subdomain", "capability_role"])
+            ["score"].mean().reset_index().rename(columns={"score": "avg_score"})
+        )
+        _cap_agg["avg_score"] = _cap_agg["avg_score"].round(1)
+        _domain_targets = st.session_state.get("domain_targets", {})
+        _cap_agg["target"] = _cap_agg["domain"].map(lambda d: _domain_targets.get(d, 3))
+        _cap_agg["gap"] = _cap_agg["target"] - _cap_agg["avg_score"]
+        cap_scores_5b = _cap_agg.to_dict(orient="records")
+
+        # ── Try to load from DB if session is empty (e.g. after page reload) ──
+        recs = st.session_state.get("recommendations")
+        if recs is None and assessment_id:
+            recs = load_recommendations(db, assessment_id)
+            if recs:
+                st.session_state.recommendations = recs
+
+        # ── Generation controls ───────────────────────────────────────────────
+        gap_count = sum(1 for c in cap_scores_5b if (c.get("gap") or 0) > 0)
+        max_caps = min(gap_count, 20)
+
+        with st.container(border=True):
+            st.markdown("#### Recommendation settings")
+            col_r1, col_r2 = st.columns([2, 1])
+            with col_r1:
+                st.caption(
+                    f"{gap_count} capabilities have gaps. "
+                    f"Up to {max_caps} will be analysed (largest gaps first, Core prioritised)."
+                )
+            with col_r2:
+                run_label = "Regenerate" if recs else "Generate Recommendations"
+                run_btn = st.button(run_label, type="primary")
+
+        if run_btn:
+            st.session_state.recommendations = None
+            progress_text = st.empty()
+            progress_bar = st.progress(0)
+
+            def _on_progress(idx, total, name):
+                if total > 0:
+                    progress_bar.progress(idx / total)
+                if name != "Complete":
+                    progress_text.caption(f"Analysing: **{name}** ({idx + 1}/{total})")
+                else:
+                    progress_text.caption("Recommendations complete.")
+                    progress_bar.progress(1.0)
+
+            try:
+                recs = build_recommendations(
+                    db=db,
+                    assessment_id=assessment_id or 0,
+                    cap_scores=cap_scores_5b,
+                    client_industry=st.session_state.get("client_industry", ""),
+                    intent_text=st.session_state.get("intent_text", ""),
+                    usecase_id=st.session_state.get("selected_usecase_id"),
+                    max_caps=max_caps,
+                    on_progress=_on_progress,
+                )
+                st.session_state.recommendations = recs
+                if assessment_id:
+                    save_recommendations(db, assessment_id, recs)
+            except Exception as _e:
+                st.error(f"Recommendation generation failed: {_e}")
+                recs = st.session_state.get("recommendations")
+
+        # ── Display recommendations ───────────────────────────────────────────
+        recs = st.session_state.get("recommendations")
+        if recs:
+            st.divider()
+
+            # Summary strip
+            p1 = sum(1 for r in recs if r.get("priority_tier") == "P1")
+            p2 = sum(1 for r in recs if r.get("priority_tier") == "P2")
+            p3 = sum(1 for r in recs if r.get("priority_tier") == "P3")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Capabilities analysed", len(recs))
+            c2.metric("P1 — Foundation", p1)
+            c3.metric("P2 — Acceleration", p2)
+            c4.metric("P3 — Optimisation", p3)
+
+            # Priority filter
+            tier_filter = st.radio(
+                "Show", ["All", "P1 only", "P2 only", "P3 only"],
+                horizontal=True, key="rec_tier_filter"
+            )
+            filter_map = {"P1 only": "P1", "P2 only": "P2", "P3 only": "P3"}
+            filtered_recs = (
+                [r for r in recs if r.get("priority_tier") == filter_map[tier_filter]]
+                if tier_filter != "All" else recs
+            )
+
+            tier_colours = {"P1": "🔴", "P2": "🟡", "P3": "🟢"}
+            for rec in filtered_recs:
+                tier = rec.get("priority_tier", "P2")
+                expanded = tier == "P1"
+                label = (
+                    f"{tier_colours.get(tier, '')} **[{tier}]** "
+                    f"{rec['capability_name']} | {rec['domain']} | "
+                    f"gap: {rec['gap']:.1f} | {rec.get('capability_role', '')} | "
+                    f"{rec.get('effort_estimate', '')}"
+                )
+                with st.expander(label, expanded=expanded):
+                    if rec.get("narrative"):
+                        st.markdown(rec["narrative"])
+                    st.markdown("**Recommended actions:**")
+                    for action in rec.get("recommended_actions", []):
+                        st.markdown(f"- {action}")
+                    if rec.get("enabling_dependencies"):
+                        st.markdown("**Must be in place first:**")
+                        for dep in rec["enabling_dependencies"]:
+                            st.markdown(f"- {dep}")
+                    if rec.get("success_indicators"):
+                        st.markdown("**Success indicators:**")
+                        for ind in rec["success_indicators"]:
+                            st.markdown(f"- {ind}")
+                    if rec.get("hpe_relevance"):
+                        st.info(f"**HPE relevance:** {rec['hpe_relevance']}")
+
+            # Export
+            st.divider()
+            st.markdown("### Export")
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                import csv, io as _io
+                _csv_buf = _io.StringIO()
+                _fields = [
+                    "capability_name", "domain", "capability_role", "current_score",
+                    "target_maturity", "gap", "priority_tier", "effort_estimate",
+                    "narrative", "hpe_relevance",
+                ]
+                _writer = csv.DictWriter(_csv_buf, fieldnames=_fields, extrasaction="ignore")
+                _writer.writeheader()
+                _writer.writerows(recs)
+                st.download_button(
+                    "Download CSV",
+                    data=_csv_buf.getvalue(),
+                    file_name=f"{st.session_state.use_case_name}_recommendations.csv".replace(" ", "_"),
+                    mime="text/csv",
+                )
+            with col_e2:
+                st.download_button(
+                    "Download JSON",
+                    data=_json.dumps(recs, indent=2),
+                    file_name=f"{st.session_state.use_case_name}_recommendations.json".replace(" ", "_"),
+                    mime="application/json",
+                )
+
+        # ── Navigation ────────────────────────────────────────────────────────
+        st.divider()
+        col_5b_a, col_5b_b = st.columns([1, 1])
+        with col_5b_a:
+            if st.button("← Back to Findings"):
+                st.session_state.wizard_step = 5
+                st.rerun()
+        with col_5b_b:
             if st.button("Continue to Roadmap →", type="primary"):
                 st.session_state.wizard_step = 6
                 st.rerun()
@@ -1413,6 +1614,18 @@ def render():
                     )
                     st.session_state.roadmap_scope = roadmap_scope
 
+                recs_for_roadmap = st.session_state.get("recommendations")
+                if recs_for_roadmap:
+                    st.info(
+                        f"Roadmap will be structured using {len(recs_for_roadmap)} "
+                        "gap recommendations from Step 5b."
+                    )
+                else:
+                    st.caption(
+                        "No recommendations loaded. Run Step 5b first for a "
+                        "recommendation-aligned roadmap, or generate below using scores only."
+                    )
+
                 if st.button("Generate Roadmap", type="primary"):
                     st.session_state.roadmap_data = None  # clear stale data
                     with st.spinner("Generating transformation roadmap with AI…"):
@@ -1425,6 +1638,7 @@ def render():
                                 overall_score=overall,
                                 horizon_months=horizon_months,
                                 scope=roadmap_scope,
+                                recommendations=recs_for_roadmap,
                             )
                             st.session_state.roadmap_data = roadmap
                         except Exception as e:

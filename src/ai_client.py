@@ -258,6 +258,122 @@ Return ONLY a JSON array (no markdown, no preamble) with one object per response
     return enriched
 
 
+def generate_gap_recommendations(
+    capability_name: str,
+    domain: str,
+    capability_role: str,
+    current_score: float,
+    target_maturity: int,
+    gap: float,
+    priority_tier: str,
+    current_level_descriptor: str,
+    target_level_descriptor: str,
+    scored_responses: list[dict],
+    foundational_deps: list[str],
+    framework_phase: int | None,
+    client_industry: str,
+    intent_text: str,
+) -> dict:
+    """
+    Generates a structured gap-closure recommendation for a single capability.
+
+    Returns a dict with keys:
+        recommended_actions, enabling_dependencies, success_indicators,
+        hpe_relevance, narrative
+    """
+    client = get_ai_client()
+
+    response_block = "\n".join(
+        f"  Q: {r.get('question', '')}\n"
+        f"  Score: {r.get('score', 'N/A')}/5"
+        + (f"  Answer: {r.get('answer', '')}" if r.get("answer") else "")
+        + (f"\n  Notes: {r.get('notes', '')}" if r.get("notes") else "")
+        for r in scored_responses
+    ) or "  No responses recorded."
+
+    dep_block = (
+        "  " + "\n  ".join(foundational_deps)
+        if foundational_deps
+        else "  None identified."
+    )
+
+    phase_hint = (
+        f"The E2CAF framework places this capability in Phase {framework_phase} "
+        f"of the transformation journey."
+        if framework_phase
+        else "No framework phase constraint applies."
+    )
+
+    prompt = f"""You are a senior HPE enterprise transformation consultant writing a structured capability gap recommendation.
+
+CAPABILITY: {capability_name}
+DOMAIN: {domain}
+ROLE IN ASSESSMENT: {capability_role}
+CURRENT MATURITY SCORE: {current_score:.1f}/5
+TARGET MATURITY LEVEL: L{target_maturity}
+GAP: {gap:.1f}
+PRIORITY TIER: {priority_tier}  (P1=Phase 1 Foundation, P2=Phase 2 Acceleration, P3=Phase 3 Optimisation)
+CLIENT INDUSTRY: {client_industry or "Enterprise"}
+TRANSFORMATION INTENT: {intent_text}
+{phase_hint}
+
+WHAT THE CLIENT LOOKS LIKE AT THEIR CURRENT LEVEL:
+{current_level_descriptor or "No descriptor available."}
+
+WHAT THEY NEED TO ACHIEVE AT L{target_maturity}:
+{target_level_descriptor or "No descriptor available."}
+
+ASSESSMENT RESPONSES FOR THIS CAPABILITY:
+{response_block}
+
+FOUNDATIONAL CAPABILITIES THAT MUST BE IN PLACE FIRST:
+{dep_block}
+
+Based on the above, generate a precise, actionable recommendation. Do NOT use generic maturity advice — ground every action in the actual responses and level descriptors provided.
+
+Return ONLY a valid JSON object with no preamble, no markdown, no explanation:
+{{
+  "recommended_actions": [
+    "<specific action 1 — what to do, not what to assess>",
+    "<specific action 2>",
+    "<specific action 3>"
+  ],
+  "enabling_dependencies": [
+    "<capability or foundation that must exist before this work begins>"
+  ],
+  "success_indicators": [
+    "<measurable outcome 1 — specific, not generic>",
+    "<measurable outcome 2>"
+  ],
+  "hpe_relevance": "<1-2 sentences on which HPE service lines or offerings are directly relevant to closing this gap>",
+  "narrative": "<2-3 sentence recommendation paragraph written for a CIO or executive sponsor, explaining why this gap matters and what the recommended path forward is>"
+}}
+
+Rules:
+- recommended_actions: 3–5 concrete actions, ordered from foundational to advanced
+- If foundational dependencies exist, the first action must address them
+- enabling_dependencies: only list capabilities (from the foundational deps provided) that truly block progress; leave empty array if none
+- success_indicators: measurable, time-bound where possible
+- Do not repeat the raw scores — interpret what they mean
+"""
+
+    response = _call_with_retry(
+        client,
+        model=DEFAULT_MODEL,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw = response.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
+
+    return json.loads(raw)
+
+
 def generate_roadmap_plan(
     use_case_name: str,
     intent_text: str,
@@ -266,6 +382,7 @@ def generate_roadmap_plan(
     overall_score: float,
     horizon_months: int = 6,
     scope: str = "Core",
+    recommendations: list[dict] | None = None,
 ) -> dict:
     """
     Calls Claude to generate a structured gap-closure roadmap.
@@ -310,6 +427,43 @@ def generate_roadmap_plan(
         for c in filtered_caps[:20]
     )
 
+    # Build recommendations block if provided
+    if recommendations:
+        rec_cap_names = {r["capability_name"] for r in recommendations}
+        recs_by_tier: dict[str, list[str]] = {"P1": [], "P2": [], "P3": []}
+        for r in recommendations:
+            tier = r.get("priority_tier", "P2")
+            actions = r.get("recommended_actions", [])
+            deps = r.get("enabling_dependencies", [])
+            line = (
+                f"  [{r['capability_name']} | {r['domain']}] "
+                f"Actions: {'; '.join(actions[:3])}"
+            )
+            if deps:
+                line += f" | Requires: {', '.join(deps[:2])}"
+            recs_by_tier.get(tier, recs_by_tier["P2"]).append(line)
+
+        rec_block = (
+            "\n\nCAPABILITY RECOMMENDATIONS (AUTHORITATIVE — use these to structure phases and initiatives):\n"
+            "Phase assignment rules: P1 → Phase 1, P2 → Phase 2, P3 → Phase 3. "
+            "Do not move a capability to a later phase than its tier. "
+            "You MAY promote a capability to an earlier phase only if a P1 dependency requires it.\n\n"
+            "P1 — Phase 1 (Foundation):\n"
+            + ("\n".join(recs_by_tier["P1"]) or "  None.") + "\n\n"
+            "P2 — Phase 2 (Acceleration):\n"
+            + ("\n".join(recs_by_tier["P2"]) or "  None.") + "\n\n"
+            "P3 — Phase 3 (Optimisation):\n"
+            + ("\n".join(recs_by_tier["P3"]) or "  None.")
+        )
+        phase_rule = (
+            "- Phase 1 contains ALL P1 capabilities; Phase 2 ALL P2; Phase 3 ALL P3\n"
+            "- Within each phase, sequence initiatives so dependencies are satisfied first\n"
+            "- Use the recommended actions to name and describe each initiative"
+        )
+    else:
+        rec_block = ""
+        phase_rule = "- Assign capabilities to phases based on gap size and dependency order"
+
     prompt = f"""You are a senior enterprise transformation consultant.
 
 A capability maturity assessment has been completed:
@@ -324,13 +478,14 @@ DOMAIN SCORES (current/target/gap, sorted by gap descending):
 {domain_summary}
 
 TOP CAPABILITY GAPS ({scope} scope, sorted by gap descending):
-{cap_summary}
+{cap_summary}{rec_block}
 
 Design a prioritised gap-closure roadmap with:
 - 3–4 sequential phases that naturally overlap (waterfall planning, agile delivery within each phase)
 - Each phase: 3–6 domain-level initiatives (grouped themes, NOT individual tasks)
 - Total timeline = {total_weeks} weeks
 - Phases should overlap by 2–4 weeks to enable smooth transitions
+{phase_rule}
 
 Return ONLY a valid JSON object with this exact structure (no markdown, no preamble, no explanation):
 {{
