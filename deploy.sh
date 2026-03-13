@@ -97,6 +97,8 @@ if [[ "$SKIP_CODE" == false ]]; then
   info "Step 2/3 — fly deploy → $APP"
   fly deploy --app "$APP"
   success "App deployed to Fly.io"
+  info "Waiting 10 seconds for app to start..."
+  sleep 10
 else
   warn "Skipping fly deploy (--skip-code)"
 fi
