@@ -4,7 +4,10 @@ import pandas as pd
 
 from src.meridant_client import get_client
 from src.assessment_builder import analyze_use_case_readonly, CapabilityResult
-from src.assessment_store import save_assessment, save_findings, save_narrative, list_assessments, load_assessment
+from src.assessment_store import (
+    save_assessment, save_assessment_shell, upsert_capabilities, save_questions,
+    save_findings, save_narrative, list_assessments, load_assessment,
+)
 from src.question_generator import generate_questions_for_capability
 from src.sql_templates import q_list_next_usecases
 from collections import defaultdict
@@ -239,7 +242,23 @@ def _hydrate_session_from_db(data: dict) -> None:
     st.session_state.confirm_regen_narrative = False
     st.session_state.confirm_regen_recs      = False
     st.session_state.roadmap_data          = None
-    st.session_state.wizard_step           = 5
+
+    # ── Smart step detection — resume at the correct wizard step ──────────────
+    # Determine where the assessment was interrupted based on what is saved in DB:
+    #   No capabilities        → Step 1 (just started)
+    #   Caps but no responses  → Step 3 (need to generate/re-load questions)
+    #   Blank responses (all score=None AND answer=None) → Step 4 (questions saved, workshop pending)
+    #   Any scored response    → Step 5 (responses captured, show findings)
+    #   status = 'complete'    → Step 5 (findings already computed)
+    if not caps:
+        resume_step = 1
+    elif not responses:
+        resume_step = 3
+    elif all(r.get("score") is None and r.get("answer") is None for r in responses):
+        resume_step = 4
+    else:
+        resume_step = 5
+    st.session_state.wizard_step = resume_step
 
 
 def _build_client_stated_context(responses: dict) -> str:
@@ -591,6 +610,10 @@ def render():
                 st.session_state.downstream_caps = [c.__dict__ for c in downstream]
                 st.session_state.domains_covered = domains_covered
 
+                # ── Save assessment shell to DB immediately ────────────────
+                db = get_client()
+                st.session_state.assessment_id = save_assessment_shell(db, st.session_state)
+
                 st.success(
                     f"Loaded **{cap_count}** capabilities for *{use_case_name}* "
                     f"({len(core)} core · {len(upstream)} upstream · {len(downstream)} downstream). "
@@ -601,6 +624,9 @@ def render():
 
             # ── Custom: proceed to Step 2 for AI discovery ──────────────────
             else:
+                # ── Save assessment shell to DB immediately ────────────────
+                db = get_client()
+                st.session_state.assessment_id = save_assessment_shell(db, st.session_state)
                 st.session_state.wizard_step = 2
                 st.rerun()
 
@@ -743,6 +769,10 @@ def render():
         with col2:
             if st.button("Continue to Step 3", type="primary"):
                 st.session_state.domain_targets = new_targets
+                # ── Persist capabilities + domain targets to DB ────────────
+                if st.session_state.get("assessment_id"):
+                    db = get_client()
+                    upsert_capabilities(db, st.session_state.assessment_id, st.session_state)
                 st.session_state.wizard_step = 3
                 st.rerun()
                 
@@ -821,6 +851,15 @@ def render():
                 mime="text/csv",
             )
 
+            # ── Show assessment ID for workshop reference ──────────────────
+            _aid = st.session_state.get("assessment_id")
+            if _aid:
+                st.info(
+                    f"📋 **Assessment ID: {_aid}** — record this reference. "
+                    "Open the **Assessments** page and click **Resume** to return "
+                    "to Step 4 after your workshop."
+                )
+
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Back to Step 2"):
@@ -831,6 +870,14 @@ def render():
                 if not st.session_state.questions:
                     st.error("Generate questions first.")
                 else:
+                    # ── Persist blank questions to DB before leaving Step 3 ─
+                    if st.session_state.get("assessment_id"):
+                        db = get_client()
+                        save_questions(
+                            db,
+                            st.session_state.assessment_id,
+                            st.session_state.questions,
+                        )
                     st.session_state.wizard_step = 4
                     st.session_state.responses = {}
                     st.rerun()

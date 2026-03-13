@@ -14,7 +14,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("anthropic").setLevel(logging.WARNING)
 logging.getLogger("watchdog").setLevel(logging.WARNING)
 
-from src.pages import create_assessment, dashboard, architecture, admin_users
+from src.pages import create_assessment, dashboard, architecture, admin_users, assessments
 
 st.set_page_config(page_title="Meridant Matrix", layout="wide")
 
@@ -105,7 +105,7 @@ with st.sidebar:
 """, unsafe_allow_html=True)
     _admins = _auth_config.get("admins", [])
     _is_admin = st.session_state.get("username", "") in _admins
-    _nav_pages = ["Dashboard", "Create Assessment", "Architecture"]
+    _nav_pages = ["Dashboard", "Assessments", "Create Assessment", "Architecture"]
     if _is_admin:
         _nav_pages.append("Admin")
     page = st.radio(
@@ -131,8 +131,15 @@ st.session_state.setdefault(
     "authenticated_username", st.session_state.get("username", "")
 )
 
+# ── Handle cross-page navigation (e.g. Resume from Assessments page) ─────────
+_nav_target = st.session_state.pop("_navigate_to", None)
+if _nav_target:
+    page = _nav_target
+
 if page == "Dashboard":
     dashboard.render()
+elif page == "Assessments":
+    assessments.render()
 elif page == "Create Assessment":
     create_assessment.render()
 elif page == "Architecture":

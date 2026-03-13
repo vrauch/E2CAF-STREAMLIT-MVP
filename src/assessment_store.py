@@ -50,39 +50,104 @@ def save_narrative(client: MeridantClient, assessment_id: int, narrative: str) -
     )
 
 
-def save_assessment(client: MeridantClient, session: dict) -> int:
-    """
-    Persists a completed assessment to the database.
-    Creates or reuses a Client record.
-    Returns the new assessment_id.
-    """
-
-    # ── 1. Get or create Client ──
+def _get_or_create_client(client: MeridantClient, session: dict) -> int:
+    """Get existing client_id by name, or INSERT a new Client row. Returns client_id."""
     client_name = session.get("client_name", "Unknown Client")
     existing = client.query(
         "SELECT id FROM Client WHERE client_name = ? ORDER BY id DESC LIMIT 1",
-        [client_name]
+        [client_name],
     )
     if existing["rows"]:
-        client_id = existing["rows"][0]["id"]
-    else:
-        result = client.write(
+        return existing["rows"][0]["id"]
+    result = client.write(
+        """
+        INSERT INTO Client (client_name, industry, sector, country, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            client_name,
+            session.get("client_industry", ""),
+            session.get("client_sector", ""),
+            session.get("client_country", ""),
+            datetime.now().isoformat(),
+        ],
+    )
+    return result["lastrowid"]
+
+
+def _build_cap_rows(assessment_id: int, session: dict) -> list:
+    """Build the list of tuples for an AssessmentCapability bulk INSERT."""
+    domain_targets = session.get("domain_targets", {})
+    all_caps = (
+        [(c, "Core")       for c in session.get("core_caps", [])] +
+        [(c, "Upstream")   for c in session.get("upstream_caps", [])] +
+        [(c, "Downstream") for c in session.get("downstream_caps", [])]
+    )
+    return [
+        (
+            assessment_id,
+            int(c["capability_id"]),
+            c["capability_name"],
+            c["domain_name"],
+            c["subdomain_name"],
+            role,
+            c.get("score") or c.get("ai_score"),
+            c.get("rationale", ""),
+            domain_targets.get(c["domain_name"], 3),
+        )
+        for c, role in all_caps
+    ]
+
+
+_CAP_INSERT_SQL = """
+INSERT INTO AssessmentCapability
+    (assessment_id, capability_id, capability_name, domain_name,
+     subdomain_name, capability_role, ai_score, rationale, target_maturity)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+_RESP_INSERT_SQL = """
+INSERT INTO AssessmentResponse
+    (assessment_id, capability_id, capability_name, domain, subdomain,
+     capability_role, question, response_type, score, answer, notes)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def save_assessment_shell(client: MeridantClient, session: dict) -> int:
+    """
+    Create (or update) just the Client + Assessment header row — no capabilities or responses.
+
+    Call this at the end of Step 1 to get an assessment_id early so every subsequent step
+    can save incrementally.  Idempotent: if session already contains 'assessment_id', the
+    existing row is updated in place and the same ID is returned.
+    """
+    _ensure_consultant_column(client)
+    client_id = _get_or_create_client(client, session)
+
+    existing_id = session.get("assessment_id")
+    if existing_id:
+        client.write(
             """
-            INSERT INTO Client (client_name, industry, sector, country, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            UPDATE Assessment
+            SET client_id = ?, engagement_name = ?, use_case_name = ?,
+                intent_text = ?, usecase_id = ?, assessment_mode = ?,
+                consultant_name = ?
+            WHERE id = ?
             """,
             [
-                client_name,
-                session.get("client_industry", ""),
-                session.get("client_sector", ""),
-                session.get("client_country", ""),
-                datetime.now().isoformat(),
-            ]
+                client_id,
+                session.get("engagement_name", ""),
+                session.get("use_case_name", ""),
+                session.get("intent_text", ""),
+                session.get("selected_usecase_id"),
+                session.get("assessment_mode", "custom"),
+                session.get("authenticated_username", ""),
+                existing_id,
+            ],
         )
-        client_id = result["lastrowid"]
+        return existing_id
 
-    # ── 2. Insert Assessment header ──
-    _ensure_consultant_column(client)
     result = client.write(
         """
         INSERT INTO Assessment
@@ -95,47 +160,130 @@ def save_assessment(client: MeridantClient, session: dict) -> int:
             session.get("engagement_name", ""),
             session.get("use_case_name", ""),
             session.get("intent_text", ""),
-            session.get("selected_usecase_id"),          # FK to Next_UseCase — NULL for custom
+            session.get("selected_usecase_id"),
             session.get("assessment_mode", "custom"),
             session.get("authenticated_username", ""),
             datetime.now().isoformat(),
-        ]
+        ],
+    )
+    return result["lastrowid"]
+
+
+def upsert_capabilities(client: MeridantClient, assessment_id: int, session: dict) -> None:
+    """
+    Replace the AssessmentCapability rows for this assessment with the current session caps.
+    Called at the end of Step 2b (after domain targets are confirmed).
+    """
+    client.write(
+        "DELETE FROM AssessmentCapability WHERE assessment_id = ?",
+        [assessment_id],
+    )
+    cap_rows = _build_cap_rows(assessment_id, session)
+    if cap_rows:
+        client.write_many(_CAP_INSERT_SQL, cap_rows)
+
+
+def save_questions(
+    client: MeridantClient, assessment_id: int, questions: list[dict]
+) -> None:
+    """
+    Persist the generated question set as blank AssessmentResponse rows.
+    score, answer, and notes are all NULL/empty — they are filled in at Step 4.
+    Called after Step 3 question generation so the question set survives session expiry.
+    Idempotent: clears existing response rows before inserting.
+    """
+    client.write(
+        "DELETE FROM AssessmentResponse WHERE assessment_id = ?",
+        [assessment_id],
+    )
+    if not questions:
+        return
+    rows = [
+        (
+            assessment_id,
+            int(q["capability_id"]),
+            q["capability_name"],
+            q.get("domain", ""),
+            q.get("subdomain", ""),
+            q["capability_role"],
+            q["question"],
+            q["response_type"],
+            None,   # score — filled at Step 4
+            None,   # answer — filled at Step 4
+            "",     # notes — filled at Step 4
+        )
+        for q in questions
+    ]
+    client.write_many(_RESP_INSERT_SQL, rows)
+
+
+def save_assessment(client: MeridantClient, session: dict) -> int:
+    """
+    Persists a completed assessment to the database.
+    Creates or reuses a Client record.
+    Returns the assessment_id.
+
+    If the session already contains an assessment_id (shell was created at Step 1 and
+    questions were saved at Step 3), only the AssessmentResponse rows are replaced —
+    the header and capabilities are left as-is.
+    """
+    existing_id = session.get("assessment_id")
+
+    if existing_id:
+        # ── Fast path: assessment already exists — update responses only ──
+        client.write(
+            "DELETE FROM AssessmentResponse WHERE assessment_id = ?",
+            [existing_id],
+        )
+        responses = session.get("responses", {})
+        if responses:
+            response_rows = [
+                (
+                    existing_id,
+                    int(r["capability_id"]),
+                    r["capability_name"],
+                    r["domain"],
+                    r["subdomain"],
+                    r["capability_role"],
+                    r["question"],
+                    r["response_type"],
+                    r.get("score"),
+                    r.get("answer"),
+                    r.get("notes", ""),
+                )
+                for r in responses.values()
+            ]
+            client.write_many(_RESP_INSERT_SQL, response_rows)
+        return existing_id
+
+    # ── Full path: no prior shell — insert everything (legacy / edge-case fallback) ──
+    _ensure_consultant_column(client)
+    client_id = _get_or_create_client(client, session)
+
+    result = client.write(
+        """
+        INSERT INTO Assessment
+            (client_id, engagement_name, use_case_name, intent_text,
+             usecase_id, assessment_mode, consultant_name, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'in_progress', ?)
+        """,
+        [
+            client_id,
+            session.get("engagement_name", ""),
+            session.get("use_case_name", ""),
+            session.get("intent_text", ""),
+            session.get("selected_usecase_id"),
+            session.get("assessment_mode", "custom"),
+            session.get("authenticated_username", ""),
+            datetime.now().isoformat(),
+        ],
     )
     assessment_id = result["lastrowid"]
 
-    # ── 3. Insert capabilities ──
-    domain_targets = session.get("domain_targets", {})
-    all_caps = (
-        [(c, "Core") for c in session.get("core_caps", [])] +
-        [(c, "Upstream") for c in session.get("upstream_caps", [])] +
-        [(c, "Downstream") for c in session.get("downstream_caps", [])]
-    )
-    if all_caps:
-        cap_rows = [
-            (
-                assessment_id,
-                int(c["capability_id"]),
-                c["capability_name"],
-                c["domain_name"],
-                c["subdomain_name"],
-                role,
-                c.get("score") or c.get("ai_score"),
-                c.get("rationale", ""),
-                domain_targets.get(c["domain_name"], 3),
-            )
-            for c, role in all_caps
-        ]
-        client.write_many(
-            """
-            INSERT INTO AssessmentCapability
-                (assessment_id, capability_id, capability_name, domain_name,
-                 subdomain_name, capability_role, ai_score, rationale, target_maturity)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            cap_rows
-        )
+    cap_rows = _build_cap_rows(assessment_id, session)
+    if cap_rows:
+        client.write_many(_CAP_INSERT_SQL, cap_rows)
 
-    # ── 4. Insert responses ──
     responses = session.get("responses", {})
     if responses:
         response_rows = [
@@ -154,15 +302,7 @@ def save_assessment(client: MeridantClient, session: dict) -> int:
             )
             for r in responses.values()
         ]
-        client.write_many(
-            """
-            INSERT INTO AssessmentResponse
-                (assessment_id, capability_id, capability_name, domain, subdomain,
-                 capability_role, question, response_type, score, answer, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            response_rows
-        )
+        client.write_many(_RESP_INSERT_SQL, response_rows)
 
     return assessment_id
 
