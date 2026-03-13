@@ -33,21 +33,36 @@ for _k, _v in _dv(os.path.join(ROOT, ".env")).items():
     if _v is not None:
         os.environ[_k] = _v
 
-from src.tmm_client import TMMClient
+from src.meridant_client import MeridantClient
 from src.assessment_builder import analyze_use_case_readonly
 from src.question_generator import generate_questions_for_capability
 
 # ── DB path ───────────────────────────────────────────────────────────────────
-DB_PATH = os.environ.get("TMM_DB_PATH", "/data/e2caf.db")
-local = os.path.join(ROOT, "data", "e2caf.db")
-if not os.path.exists(DB_PATH) and os.path.exists(local):
-    DB_PATH = local
+FRAMEWORKS_PATH = (
+    os.environ.get("MERIDANT_FRAMEWORKS_DB_PATH")
+    or os.environ.get("TMM_DB_PATH", "/data/meridant_frameworks.db")
+)
+ASSESSMENTS_PATH = (
+    os.environ.get("MERIDANT_ASSESSMENTS_DB_PATH")
+    or os.environ.get("TMM_DB_PATH", "/data/meridant.db")
+)
+local_fw = os.path.join(ROOT, "data", "meridant_frameworks.db")
+local_as = os.path.join(ROOT, "data", "meridant.db")
+if not os.path.exists(FRAMEWORKS_PATH) and os.path.exists(local_fw):
+    FRAMEWORKS_PATH = local_fw
+if not os.path.exists(ASSESSMENTS_PATH) and os.path.exists(local_as):
+    ASSESSMENTS_PATH = local_as
 
-print(f"Using DB: {DB_PATH}")
+print(f"Using frameworks DB : {FRAMEWORKS_PATH}")
+print(f"Using assessments DB: {ASSESSMENTS_PATH}")
 print(f"API key:  {'SET' if os.environ.get('ANTHROPIC_API_KEY') else 'MISSING - check .env'}")
 
-tmm = TMMClient(db_path=DB_PATH)
-con = sqlite3.connect(DB_PATH)
+tmm = MeridantClient(
+    frameworks_db_path=FRAMEWORKS_PATH,
+    assessments_db_path=ASSESSMENTS_PATH,
+)
+con = sqlite3.connect(FRAMEWORKS_PATH)
+con.execute(f'ATTACH DATABASE "{ASSESSMENTS_PATH}" AS assessments')
 con.row_factory = sqlite3.Row
 
 # ── DB helpers ────────────────────────────────────────────────────────────────

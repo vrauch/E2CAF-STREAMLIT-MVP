@@ -2,7 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 
-from src.tmm_client import get_client
+from src.meridant_client import get_client
 from src.assessment_builder import analyze_use_case_readonly, CapabilityResult
 from src.assessment_store import save_assessment, save_findings, save_narrative, list_assessments, load_assessment
 from src.question_generator import generate_questions_for_capability
@@ -1331,10 +1331,11 @@ def render():
                 engagement_name=st.session_state.get("engagement_name", ""),
                 use_case_name=st.session_state.use_case_name,
             )
+            _client_slug = st.session_state.get("client_name", "Client").replace(" ", "_")
             st.download_button(
                 "Download Heatmap (Excel)",
                 data=excel_bytes,
-                file_name=f"{st.session_state.use_case_name}_maturity_heatmap.xlsx".replace(" ", "_"),
+                file_name=f"Meridant_Insight_{_client_slug}_Heatmap.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
@@ -1817,10 +1818,11 @@ def render():
                     engagement_name=st.session_state.get("engagement_name", ""),
                     use_case_name=st.session_state.use_case_name,
                 )
+                _client_slug = st.session_state.get("client_name", "Client").replace(" ", "_")
                 st.download_button(
                     "Download Roadmap (Excel)",
                     data=excel_bytes,
-                    file_name=f"{st.session_state.use_case_name}_roadmap.xlsx".replace(" ", "_"),
+                    file_name=f"Meridant_Insight_{_client_slug}_Roadmap.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 

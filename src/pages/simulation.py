@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from src.tmm_client import get_client
+from src.meridant_client import get_client
 from src import sql_templates as sql
 
 def _download(df: pd.DataFrame, filename: str, label: str):

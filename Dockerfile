@@ -6,11 +6,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code (includes data/e2caf.db, baked into the image)
+# Copy application code (data/*.db files are NOT committed — mount via Docker volume)
 COPY . .
 
-# Default DB path — testers get this automatically; local dev overrides via .env
-ENV TMM_DB_PATH=/app/data/e2caf.db
+# Default DB paths — override via .env or Docker volume mounts in production
+ENV MERIDANT_FRAMEWORKS_DB_PATH=/app/data/meridant_frameworks.db
+ENV MERIDANT_ASSESSMENTS_DB_PATH=/app/data/meridant.db
 
 # Mount point for optional local volume override
 RUN mkdir -p /data

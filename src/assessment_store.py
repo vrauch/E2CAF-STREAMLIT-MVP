@@ -2,10 +2,10 @@
 
 import json
 from datetime import datetime
-from src.tmm_client import TMMClient
+from src.meridant_client import MeridantClient
 
 
-def _ensure_narrative_column(client: TMMClient) -> None:
+def _ensure_narrative_column(client: MeridantClient) -> None:
     """
     Add findings_narrative column to Assessment if it doesn't already exist.
     SQLite raises OperationalError on duplicate ADD COLUMN — we suppress it.
@@ -17,7 +17,7 @@ def _ensure_narrative_column(client: TMMClient) -> None:
         pass  # Column already exists
 
 
-def save_narrative(client: TMMClient, assessment_id: int, narrative: str) -> None:
+def save_narrative(client: MeridantClient, assessment_id: int, narrative: str) -> None:
     """
     Persist (or overwrite) the executive summary narrative for an assessment.
     Creates the column if this is the first time it's been used.
@@ -29,7 +29,7 @@ def save_narrative(client: TMMClient, assessment_id: int, narrative: str) -> Non
     )
 
 
-def save_assessment(client: TMMClient, session: dict) -> int:
+def save_assessment(client: MeridantClient, session: dict) -> int:
     """
     Persists a completed assessment to the database.
     Creates or reuses a Client record.
@@ -156,7 +156,7 @@ def _risk(score) -> str:
 
 
 def save_findings(
-    client: TMMClient,
+    client: MeridantClient,
     assessment_id: int,
     cap_scores: list[dict],
     dom_scores: list[dict],
@@ -227,7 +227,7 @@ def save_findings(
 
 
 def save_recommendations(
-    client: TMMClient,
+    client: MeridantClient,
     assessment_id: int,
     recommendations: list[dict],
 ) -> None:
@@ -280,7 +280,7 @@ def save_recommendations(
     )
 
 
-def load_recommendations(client: TMMClient, assessment_id: int) -> list[dict]:
+def load_recommendations(client: MeridantClient, assessment_id: int) -> list[dict]:
     """
     Loads persisted recommendations for an assessment.
     JSON-decodes list fields.
@@ -306,7 +306,7 @@ def load_recommendations(client: TMMClient, assessment_id: int) -> list[dict]:
     return rows
 
 
-def list_assessments(client: TMMClient) -> list[dict]:
+def list_assessments(client: MeridantClient) -> list[dict]:
     """Return a summary list of all assessments, newest first."""
     res = client.query("""
         SELECT a.id, c.client_name, a.engagement_name, a.use_case_name,
@@ -318,7 +318,7 @@ def list_assessments(client: TMMClient) -> list[dict]:
     return res.get("rows", [])
 
 
-def load_assessment(client: TMMClient, assessment_id: int):
+def load_assessment(client: MeridantClient, assessment_id: int):
     """
     Load a complete assessment from the database.
     Returns a dict with keys: assessment, capabilities, responses.

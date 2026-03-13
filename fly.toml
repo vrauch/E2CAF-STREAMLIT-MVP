@@ -9,7 +9,8 @@ primary_region = 'syd'
 [build]
 
 [env]
-  TMM_DB_PATH = "/data/e2caf.db"
+  MERIDANT_FRAMEWORKS_DB_PATH = "/data/meridant_frameworks.db"
+  MERIDANT_ASSESSMENTS_DB_PATH = "/data/meridant.db"
 
 [http_service]
   internal_port = 8501
@@ -20,6 +21,9 @@ primary_region = 'syd'
   processes = ['app']
 
 [[mounts]]
+  # NOTE: To rename the Fly volume from 'tmm_data' to 'meridant_data', run:
+  #   fly volumes list --app streamlit-mvp
+  #   (Fly does not support in-place volume rename — create new volume, migrate data, update source below)
   source = "tmm_data"
   destination = "/data"
 

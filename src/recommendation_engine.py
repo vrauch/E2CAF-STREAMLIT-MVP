@@ -6,7 +6,7 @@ Exported function:
 """
 
 import logging
-from src.tmm_client import TMMClient
+from src.meridant_client import MeridantClient
 from src.ai_client import generate_gap_recommendations
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS AssessmentRecommendation (
 """
 
 
-def _ensure_table(db: TMMClient) -> None:
+def _ensure_table(db: MeridantClient) -> None:
     db.write(_CREATE_TABLE_SQL, [])
 
 
@@ -61,7 +61,7 @@ def _effort_estimate(gap: float) -> str:
 
 # ── DB context loaders ────────────────────────────────────────────────────────
 
-def _load_level_descriptor(db: TMMClient, capability_id: int, level: int) -> str:
+def _load_level_descriptor(db: MeridantClient, capability_id: int, level: int) -> str:
     """Return the capability_state + key_indicators text for a given capability/level."""
     res = db.query(
         """
@@ -84,7 +84,7 @@ def _load_level_descriptor(db: TMMClient, capability_id: int, level: int) -> str
     return " ".join(parts)
 
 
-def _load_responses(db: TMMClient, assessment_id: int, capability_id: int) -> list[dict]:
+def _load_responses(db: MeridantClient, assessment_id: int, capability_id: int) -> list[dict]:
     res = db.query(
         """
         SELECT question, response_type, score, answer, notes
@@ -96,7 +96,7 @@ def _load_responses(db: TMMClient, assessment_id: int, capability_id: int) -> li
     return res.get("rows", [])
 
 
-def _load_foundational_deps(db: TMMClient, capability_id: int) -> list[str]:
+def _load_foundational_deps(db: MeridantClient, capability_id: int) -> list[str]:
     """Return names of capabilities that are Foundational prerequisites for this one."""
     res = db.query(
         """
@@ -112,7 +112,7 @@ def _load_foundational_deps(db: TMMClient, capability_id: int) -> list[str]:
 
 
 def _load_framework_phase(
-    db: TMMClient, capability_id: int, usecase_id: int | None
+    db: MeridantClient, capability_id: int, usecase_id: int | None
 ) -> int | None:
     if not usecase_id:
         return None
@@ -132,7 +132,7 @@ def _load_framework_phase(
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def build_recommendations(
-    db: TMMClient,
+    db: MeridantClient,
     assessment_id: int,
     cap_scores: list[dict],
     client_industry: str,
@@ -147,7 +147,7 @@ def build_recommendations(
     to generate a structured recommendation.
 
     Args:
-        db:               TMMClient instance.
+        db:               MeridantClient instance.
         assessment_id:    ID of the saved assessment.
         cap_scores:       List of capability score dicts from Step 5
                           (capability_id, capability_name, domain, capability_role,

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import re
 
-from src.tmm_client import TMMClient
+from src.meridant_client import MeridantClient
 
 @dataclass
 class CapabilityResult:

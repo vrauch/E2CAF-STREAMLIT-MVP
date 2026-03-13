@@ -3,7 +3,7 @@ generate roadmaps, run investment optimisation, and produce an executive strateg
 
 import streamlit as st
 import pandas as pd
-from src.tmm_client import get_client
+from src.meridant_client import get_client
 from src.sql_templates import (
     q_list_next_usecases,
     q_list_tags,

@@ -10,7 +10,7 @@ Architecture pattern:
 import json
 import streamlit as st
 import streamlit.components.v1 as components
-from src.tmm_client import get_client
+from src.meridant_client import get_client
 from src.sql_templates import q_list_next_usecases
 
 

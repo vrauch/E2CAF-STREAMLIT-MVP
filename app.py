@@ -13,11 +13,11 @@ logging.getLogger("watchdog").setLevel(logging.WARNING)
 
 from src.pages import create_assessment, dashboard, architecture
 
-st.set_page_config(page_title="Assessment MVP", layout="wide")
+st.set_page_config(page_title="Meridant Matrix", layout="wide")
 
 with st.sidebar:
-    st.title("Assessment MVP")
-    st.caption("UI for Assessment capability intelligence")
+    st.title("Meridant Matrix")
+    st.caption("Capability Maturity Assessment Platform")
     page = st.radio(
     "Navigate",
     ["Dashboard", "Create Assessment", "Architecture"],

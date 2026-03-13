@@ -44,12 +44,24 @@ try:
 except ImportError:
     pass
 
-DB_PATH = os.environ.get("TMM_DB_PATH", "/data/e2caf.db")
-local = os.path.join(ROOT, "data", "e2caf.db")
-if not os.path.exists(DB_PATH) and os.path.exists(local):
-    DB_PATH = local
+FRAMEWORKS_PATH = (
+    os.environ.get("MERIDANT_FRAMEWORKS_DB_PATH")
+    or os.environ.get("TMM_DB_PATH", "/data/meridant_frameworks.db")
+)
+ASSESSMENTS_PATH = (
+    os.environ.get("MERIDANT_ASSESSMENTS_DB_PATH")
+    or os.environ.get("TMM_DB_PATH", "/data/meridant.db")
+)
+# Local fallbacks
+local_fw = os.path.join(ROOT, "data", "meridant_frameworks.db")
+local_as = os.path.join(ROOT, "data", "meridant.db")
+if not os.path.exists(FRAMEWORKS_PATH) and os.path.exists(local_fw):
+    FRAMEWORKS_PATH = local_fw
+if not os.path.exists(ASSESSMENTS_PATH) and os.path.exists(local_as):
+    ASSESSMENTS_PATH = local_as
 
-print(f"Using DB: {DB_PATH}")
+print(f"Using frameworks DB : {FRAMEWORKS_PATH}")
+print(f"Using assessments DB: {ASSESSMENTS_PATH}")
 
 # ── Assessment specs ──────────────────────────────────────────────────────────
 ASSESSMENTS = [
@@ -1002,7 +1014,8 @@ def seed_assessment(conn: sqlite3.Connection, spec: dict, rng: random.Random) ->
 def main() -> None:
     clean = "--clean" in sys.argv
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(FRAMEWORKS_PATH)
+    conn.execute(f'ATTACH DATABASE "{ASSESSMENTS_PATH}" AS assessments')
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
