@@ -115,6 +115,22 @@ if [[ "$SKIP_DB" == false ]]; then
     DB_SIZE=$(du -sh "$FRAMEWORK_DB" | cut -f1)
     info "Uploading $FRAMEWORK_DB ($DB_SIZE) → $FLY_DATA_DIR/$REMOTE_DB_NAME"
 
+    # Ensure at least one VM is running (auto_stop_machines may have stopped it)
+    info "Ensuring a VM is running..."
+    fly machine start --app "$APP" 2>/dev/null || true
+
+    MAX_WAIT=90
+    ELAPSED=0
+    until fly status --app "$APP" 2>/dev/null | grep -q "started"; do
+      if [[ $ELAPSED -ge $MAX_WAIT ]]; then
+        error "Timed out waiting for a running VM after ${MAX_WAIT}s"
+      fi
+      info "  Waiting for VM... (${ELAPSED}s / ${MAX_WAIT}s)"
+      sleep 5
+      ELAPSED=$((ELAPSED + 5))
+    done
+    success "VM is running"
+
     # Use heredoc to drive the interactive SFTP shell non-interactively
     printf "put %s %s/%s\nexit\n" \
       "$FRAMEWORK_DB" "$FLY_DATA_DIR" "$REMOTE_DB_NAME" \
