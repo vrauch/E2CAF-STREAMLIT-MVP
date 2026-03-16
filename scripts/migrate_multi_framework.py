@@ -108,7 +108,7 @@ def migrate_frameworks_db(db_path: str) -> None:
         sys.exit(1)
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    # WAL mode omitted — not supported on Windows Docker bind mounts
     try:
         with conn:
             # 1. Create Next_Framework table
@@ -176,7 +176,7 @@ def migrate_assessments_db(db_path: str) -> None:
         print("Check MERIDANT_ASSESSMENTS_DB_PATH env var.")
         sys.exit(1)
     conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode = WAL")
+    # WAL mode omitted — not supported on Windows Docker bind mounts
     try:
         with conn:
             print("\n[1] Assessment table — adding framework_id")

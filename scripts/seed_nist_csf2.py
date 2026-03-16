@@ -812,7 +812,7 @@ def main():
 
     conn = sqlite3.connect(FRAMEWORKS_DB)
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    # WAL mode omitted — Windows Docker bind mounts don't support .shm file creation
 
     try:
         # Register framework

@@ -142,7 +142,7 @@ ANSWERS: dict[int, tuple[int, str, str]] = {
 def get_assessments_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(ASSESSMENTS_DB)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    # WAL mode omitted — not supported on Windows Docker bind mounts
     return conn
 
 
