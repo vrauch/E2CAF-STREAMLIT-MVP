@@ -29,13 +29,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$APP          = "streamlit-mvp"
+$APP = "streamlit-mvp"
 $FLY_DATA_DIR = "/data"
 
-function Info    { param($msg) Write-Host ">> $msg" -ForegroundColor White }
+function Info { param($msg) Write-Host ">> $msg" -ForegroundColor White }
 function Success { param($msg) Write-Host "OK $msg" -ForegroundColor Green }
-function Warn    { param($msg) Write-Host "!! $msg" -ForegroundColor Yellow }
-function Fail    { param($msg) Write-Host "XX $msg" -ForegroundColor Red; exit 1 }
+function Warn { param($msg) Write-Host "!! $msg" -ForegroundColor Yellow }
+function Fail { param($msg) Write-Host "XX $msg" -ForegroundColor Red; exit 1 }
 
 # ── Preflight checks ──────────────────────────────────────────────────────────
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Fail "git is not installed" }
@@ -50,14 +50,15 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 # ── Resolve which framework DB to upload ─────────────────────────────────────
-$frameworkDb   = $null
-$remoteDbName  = $null
+$frameworkDb = $null
+$remoteDbName = $null
 
 if (Test-Path "data\meridant_frameworks.db") {
-    $frameworkDb  = "data\meridant_frameworks.db"
+    $frameworkDb = "data\meridant_frameworks.db"
     $remoteDbName = "meridant_frameworks.db"
-} elseif (Test-Path "data\e2caf.db") {
-    $frameworkDb  = "data\e2caf.db"
+}
+elseif (Test-Path "data\e2caf.db") {
+    $frameworkDb = "data\e2caf.db"
     $remoteDbName = "e2caf.db"
 }
 
@@ -75,7 +76,8 @@ if (-not $SkipCode) {
     $gitStatus = git status --porcelain
     if ($gitStatus -eq "") {
         Warn "Nothing to commit - working tree is clean. Skipping git commit."
-    } else {
+    }
+    else {
         git add -A
         git commit -m $Message
         Success "Committed: `"$Message`""
@@ -83,7 +85,8 @@ if (-not $SkipCode) {
 
     git push
     Success "Code pushed to GitHub"
-} else {
+}
+else {
     Warn "Skipping code push (-SkipCode)"
 }
 
@@ -96,7 +99,8 @@ if (-not $SkipCode) {
     Success "App deployed to Fly.io"
     Info "Waiting 10 seconds for app to start..."
     Start-Sleep -Seconds 10
-} else {
+}
+else {
     Warn "Skipping fly deploy (-SkipCode)"
 }
 
@@ -108,7 +112,8 @@ if (-not $SkipDb) {
 
     if ($null -eq $frameworkDb) {
         Warn "No framework DB found (looked for data\meridant_frameworks.db and data\e2caf.db). Skipping DB upload."
-    } else {
+    }
+    else {
         $sizeMB = "{0:N1} MB" -f ((Get-Item $frameworkDb).Length / 1MB)
         Info "Uploading $frameworkDb ($sizeMB) -> $FLY_DATA_DIR/$remoteDbName"
 
@@ -132,7 +137,8 @@ if (-not $SkipDb) {
 
         Success "Framework DB uploaded to $FLY_DATA_DIR/$remoteDbName"
     }
-} else {
+}
+else {
     Warn "Skipping DB upload (-SkipDb)"
 }
 

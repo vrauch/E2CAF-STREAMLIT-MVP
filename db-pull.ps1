@@ -65,7 +65,7 @@ function Test-FlyFile {
     return ($result -match $RemoteName)
 }
 
-# ── Helper: pull a single file via SFTP ──────────────────────────────────────
+# ── Helper: download a single file via SFTP ──────────────────────────────────
 function Receive-DB {
     param($RemoteName, $LocalPath, $Label)
 
