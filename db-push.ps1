@@ -72,9 +72,8 @@ function Push-DB {
 
     if (-not (Test-Path $LocalPath)) { Fail "$Label not found at $LocalPath" }
 
-    # Resolve absolute path; SFTP put needs a real path, not relative
     $absPath = (Resolve-Path $LocalPath).Path
-    $sizeMB = "{0:N1} MB" -f ((Get-Item $LocalPath).Length / 1MB)
+    $sizeMB  = "{0:N1} MB" -f ((Get-Item $LocalPath).Length / 1MB)
     Info "Pushing ${Label}: $absPath ($sizeMB) -> $FLY_DATA_DIR/$RemoteName"
 
     if ($DryRun) {
@@ -82,31 +81,35 @@ function Push-DB {
         return
     }
 
-    # Write SFTP batch commands to a temp file.
-    # PowerShell's | operator does NOT send raw bytes to interactive CLIs,
-    # so we use cmd.exe stdin redirect (<) which is reliable for fly ssh sftp shell.
-    $tmpFile = [System.IO.Path]::GetTempFileName()
-    try {
-        Set-Content -Path $tmpFile -Value "put `"$absPath`" $FLY_DATA_DIR/$RemoteName" -Encoding ASCII
-        Add-Content -Path $tmpFile -Value "exit" -Encoding ASCII
+    # ── Base64 chunked upload via fly ssh console ──────────────────────────────
+    # Avoids all SFTP/stdin-pipe issues on Windows. Encodes the file as base64,
+    # appends chunks to a remote staging file, then decodes it in one step.
+    $bytes      = [IO.File]::ReadAllBytes($absPath)
+    $b64        = [Convert]::ToBase64String($bytes)
+    $chunkSize  = 30000
+    $totalChunks = [Math]::Ceiling($b64.Length / $chunkSize)
 
-        cmd /c "fly ssh sftp shell --app $APP < `"$tmpFile`""
-        if ($LASTEXITCODE -ne 0) {
-            Fail "SFTP upload failed for $Label (exit code $LASTEXITCODE)"
-        }
-    }
-    finally {
-        Remove-Item $tmpFile -ErrorAction SilentlyContinue
+    Info "Uploading in $totalChunks chunks via SSH (this takes ~1-2 min)..."
+
+    # Clear / create the remote staging file
+    fly ssh console --app $APP --command "python3 -c `"open('/tmp/_db_upload.b64','w').close()`"" 2>$null
+    if ($LASTEXITCODE -ne 0) { Fail "Could not initialise remote staging file" }
+
+    # Send chunks
+    for ($i = 0; $i -lt $b64.Length; $i += $chunkSize) {
+        $chunk    = $b64.Substring($i, [Math]::Min($chunkSize, $b64.Length - $i))
+        $chunkNum = [Math]::Floor($i / $chunkSize) + 1
+        Info "  Chunk $chunkNum / $totalChunks"
+        fly ssh console --app $APP --command "python3 -c `"open('/tmp/_db_upload.b64','a').write('$chunk')`"" 2>$null
+        if ($LASTEXITCODE -ne 0) { Fail "Failed on chunk $chunkNum" }
     }
 
-    # Verify the upload landed by checking remote file size
-    $remoteSize = fly ssh console --app $APP --command "wc -c < $FLY_DATA_DIR/$RemoteName" 2>$null
-    $localSize = (Get-Item $LocalPath).Length
-    if ($remoteSize -and [int]$remoteSize -eq $localSize) {
-        Success "$Label uploaded ($localSize bytes verified on remote)"
-    } else {
-        Success "$Label uploaded to $FLY_DATA_DIR/$RemoteName (remote: $remoteSize bytes, local: $localSize bytes)"
-    }
+    # Decode and write to final destination
+    Info "Decoding and writing to ${FLY_DATA_DIR}/${RemoteName}..."
+    $result = fly ssh console --app $APP --command "python3 -c `"import base64; d=base64.b64decode(open('/tmp/_db_upload.b64').read()); open('$FLY_DATA_DIR/$RemoteName','wb').write(d); open('/tmp/_db_upload.b64','w').close(); print('Written',len(d),'bytes')`"" 2>$null
+    if ($LASTEXITCODE -ne 0) { Fail "Failed to finalise upload: $result" }
+
+    Success "$Label uploaded: $result"
 }
 
 # ── Push framework DB ─────────────────────────────────────────────────────────
