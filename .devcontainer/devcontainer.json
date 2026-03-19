@@ -1,8 +1,5 @@
 {
     "name": "My App",
-    "features": {
-        "ghcr.io/devcontainers/features/docker-in-docker:2": {}
-    },
     "postCreateCommand": "sqlite3 data/meridant.db < seed.sql && sqlite3 data/meridant_frameworks.db < seed_frameworks.sql",
     "forwardPorts": [
         8501
