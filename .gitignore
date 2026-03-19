@@ -5,11 +5,11 @@ __pycache__/
 .DS_Store
 outputs/
 .claude/
-start.bat
-start.ps1
-TMM_Assessment_Platform_Demo_Guide.md
+*.sh
+*.bat
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/*.bak
 CLAUDE.md
 auth_config.yaml
