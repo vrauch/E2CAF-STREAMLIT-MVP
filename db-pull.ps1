@@ -66,7 +66,7 @@ function Test-FlyFile {
 }
 
 # ── Helper: pull a single file via SFTP ──────────────────────────────────────
-function Pull-DB {
+function Receive-DB {
     param($RemoteName, $LocalPath, $Label)
 
     Info "Pulling ${Label}: $FLY_DATA_DIR/$RemoteName -> $LocalPath"
@@ -97,10 +97,10 @@ function Pull-DB {
 # ── Pull framework DB ─────────────────────────────────────────────────────────
 if ($PullFrameworks) {
     if (Test-FlyFile "meridant_frameworks.db") {
-        Pull-DB "meridant_frameworks.db" "$LOCAL_DATA\meridant_frameworks.db" "Framework DB"
+        Receive-DB "meridant_frameworks.db" "$LOCAL_DATA\meridant_frameworks.db" "Framework DB"
     }
     elseif (Test-FlyFile "e2caf.db") {
-        Pull-DB "e2caf.db" "$LOCAL_DATA\e2caf.db" "Framework DB (legacy name)"
+        Receive-DB "e2caf.db" "$LOCAL_DATA\e2caf.db" "Framework DB (legacy name)"
     }
     else {
         Warn "No framework DB found on Fly.io volume. Skipping."
@@ -110,7 +110,7 @@ if ($PullFrameworks) {
 # ── Pull assessment DB ────────────────────────────────────────────────────────
 if ($PullAssessments) {
     if (Test-FlyFile "meridant.db") {
-        Pull-DB "meridant.db" "$LOCAL_DATA\meridant.db" "Assessment DB (prod data)"
+        Receive-DB "meridant.db" "$LOCAL_DATA\meridant.db" "Assessment DB (prod data)"
         Warn "Assessment DB contains production data - do not push this back to Fly.io"
     }
     else {
