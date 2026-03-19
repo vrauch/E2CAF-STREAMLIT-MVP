@@ -44,7 +44,7 @@ if (-not (Get-Command fly -ErrorAction SilentlyContinue)) {
 }
 
 # Never accidentally push the assessment DB
-$tracked = git ls-files --error-unmatch data/meridant.db 2>$null
+git ls-files --error-unmatch data/meridant.db 2>$null | Out-Null
 if ($LASTEXITCODE -eq 0) {
     Fail "data/meridant.db is tracked by git - remove it first:`n  git rm --cached data/meridant.db"
 }
