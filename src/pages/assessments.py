@@ -8,10 +8,15 @@ import streamlit as st
 
 from src.meridant_client import get_client
 from src.assessment_store import list_assessments, load_assessment
+from src.sql_templates import get_frameworks
 
 PAGE_SIZE = 15
 
-_FW_LABELS = {1: "E2CAF", 2: "NIST CSF 2.0"}
+
+def _get_fw_labels(db) -> dict[int, str]:
+    """Return {framework_id: framework_key} (short name) from Next_Framework table."""
+    rows = get_frameworks(db)
+    return {r["id"]: r["framework_key"] for r in rows} if rows else {1: "MMTF"}
 
 # Column proportions — must match between header and data rows
 _COL_W = [0.4, 1.7, 1.7, 2.3, 1.1, 1.1, 0.65, 0.9, 1.1]
@@ -60,7 +65,7 @@ def _header() -> None:
     st.markdown('<hr style="margin:0 0 4px;border-color:#E5E7EB;border-width:2px 0 0">', unsafe_allow_html=True)
 
 
-def _row(r: dict) -> None:
+def _row(r: dict, fw_labels: dict) -> None:
     aid       = r["id"]
     status    = r.get("status", "in_progress")
     score     = r.get("overall_score")
@@ -69,7 +74,7 @@ def _row(r: dict) -> None:
     engage    = r.get("engagement_name") or "—"
     usecase   = r.get("use_case_name") or "—"
     fw_id     = r.get("framework_id") or 1
-    fw        = _FW_LABELS.get(fw_id, "E2CAF")
+    fw        = fw_labels.get(fw_id, "Unknown")
     score_txt = f"{score:.1f}" if score is not None else "—"
 
     if status == "complete":
@@ -99,14 +104,14 @@ def _row(r: dict) -> None:
     cols[6].markdown(f'<span style="font-size:.8rem">{score_txt}</span>', unsafe_allow_html=True)
     cols[7].markdown(f'<span style="font-size:.78rem;color:#9CA3AF">{created}</span>', unsafe_allow_html=True)
     with cols[8]:
-        if st.button(btn_label, key=f"open_{aid}", type=btn_type, use_container_width=True):
+        if st.button(btn_label, key=f"open_{aid}", type=btn_type):
             _hydrate_and_redirect(aid)
 
 
 def render() -> None:
     st.title("Assessments")
-
     db   = get_client()
+    fw_labels = _get_fw_labels(db)
     rows = list_assessments(db)
 
     if not rows:
@@ -116,7 +121,8 @@ def render() -> None:
     # ── Filters ───────────────────────────────────────────────────────────────
     fc1, fc2, fc3 = st.columns([1.4, 1.4, 3])
 
-    all_fw = sorted({_FW_LABELS.get(r.get("framework_id") or 1, "E2CAF") for r in rows})
+    # Show all registered frameworks, not just those present in this assessment list
+    all_fw = sorted(fw_labels.values())
     with fc1:
         fw_filter = st.selectbox("Framework", ["All"] + all_fw, key="af_fw")
     with fc2:
@@ -130,7 +136,7 @@ def render() -> None:
     filtered = rows
     if fw_filter != "All":
         filtered = [r for r in filtered
-                    if _FW_LABELS.get(r.get("framework_id") or 1, "E2CAF") == fw_filter]
+                    if fw_labels.get(r.get("framework_id") or 1, "Unknown") == fw_filter]
     if status_filter == "In Progress":
         filtered = [r for r in filtered if r.get("status") == "in_progress"]
     elif status_filter == "Complete":
@@ -180,7 +186,7 @@ def render() -> None:
     # ── Table ──────────────────────────────────────────────────────────────────
     _header()
     for idx, r in enumerate(page_rows):
-        _row(r)
+        _row(r, fw_labels)
         if idx < len(page_rows) - 1:
             st.markdown(
                 '<hr style="margin:3px 0;border-color:#F3F4F6;border-width:1px 0 0">',

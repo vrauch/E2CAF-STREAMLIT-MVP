@@ -18,25 +18,43 @@ from src.pages import create_assessment, dashboard, architecture, admin_users, a
 
 st.set_page_config(page_title="Meridant Matrix", layout="wide")
 
-# ── Brand sidebar styling ────────────────────────────────────────────────────
+# ── Bootstrap 5.3 + brand styling ────────────────────────────────────────────
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
+  /* ── Buttons: Bootstrap btn-sm on all Streamlit button variants ── */
+  .stButton > button,
+  button[data-testid="baseButton-primary"],
+  button[data-testid="baseButton-secondary"],
+  button[data-testid="baseButton-tertiary"],
+  button[data-testid^="baseButton-"] {
+    font-family: 'Inter', -apple-system, sans-serif !important;
+    font-size: .775rem !important;
+    font-weight: 400 !important;
+    line-height: 1.5 !important;
+    padding: .25rem .6rem !important;
+    border-radius: .2rem !important;
+    min-height: unset !important;
+    height: auto !important;
+  }
+  /* ── Sidebar dark theme ── */
   [data-testid="stSidebar"] { background-color: #0F2744; }
   [data-testid="stSidebar"] p,
   [data-testid="stSidebar"] label,
   [data-testid="stSidebar"] span { color: #F9FAFB !important; }
   [data-testid="stSidebar"] .stRadio > div { gap: 0.25rem; }
-  [data-testid="stSidebar"] .stButton > button {
+  [data-testid="stSidebar"] .stButton > button,
+  [data-testid="stSidebar"] button[data-testid^="baseButton-"] {
     background-color: #2563EB !important;
     color: #F9FAFB !important;
     border: none !important;
     border-radius: 6px !important;
-    font-size: .75rem !important;
     padding: .35rem .9rem !important;
     width: 100%;
   }
-  [data-testid="stSidebar"] .stButton > button:hover {
+  [data-testid="stSidebar"] .stButton > button:hover,
+  [data-testid="stSidebar"] button[data-testid^="baseButton-"]:hover {
     background-color: #1D4ED8 !important;
   }
 </style>
@@ -81,6 +99,9 @@ if st.session_state.get("authentication_status") is None:
     st.stop()
 
 # ── Authenticated — render app ────────────────────────────────────────────────
+# Handle cross-page navigation BEFORE the radio renders so we can preset its value.
+_nav_target = st.session_state.pop("_navigate_to", None)
+
 with st.sidebar:
     st.markdown("""
 <div style="display:flex;align-items:center;gap:10px;padding:0.25rem 0 1.25rem;
@@ -108,10 +129,14 @@ with st.sidebar:
     _nav_pages = ["Dashboard", "Assessments", "Create Assessment", "Architecture"]
     if _is_admin:
         _nav_pages.append("Admin")
+    # Preset the radio to the programmatic target (must happen before widget renders)
+    if _nav_target and _nav_target in _nav_pages:
+        st.session_state["_sidebar_nav"] = _nav_target
     page = st.radio(
         "Navigate",
         _nav_pages,
         label_visibility="collapsed",
+        key="_sidebar_nav",
     )
     st.markdown("<div style='flex:1'></div>", unsafe_allow_html=True)
     # ── User info + logout ────────────────────────────────────────────────────
@@ -130,11 +155,6 @@ with st.sidebar:
 st.session_state.setdefault(
     "authenticated_username", st.session_state.get("username", "")
 )
-
-# ── Handle cross-page navigation (e.g. Resume from Assessments page) ─────────
-_nav_target = st.session_state.pop("_navigate_to", None)
-if _nav_target:
-    page = _nav_target
 
 if page == "Dashboard":
     dashboard.render()
