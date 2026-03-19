@@ -91,9 +91,12 @@ function Push-DB {
 
     Info "Uploading in $totalChunks chunks via SSH (this takes ~1-2 min)..."
 
+    # fly ssh console always prints "Connecting to..." to stderr — silence it
+    $ErrorActionPreference = 'SilentlyContinue'
+
     # Clear / create the remote staging file
     fly ssh console --app $APP --command "python3 -c `"open('/tmp/_db_upload.b64','w').close()`"" 2>$null
-    if ($LASTEXITCODE -ne 0) { Fail "Could not initialise remote staging file" }
+    if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = 'Stop'; Fail "Could not initialise remote staging file" }
 
     # Send chunks
     for ($i = 0; $i -lt $b64.Length; $i += $chunkSize) {
@@ -101,14 +104,15 @@ function Push-DB {
         $chunkNum = [Math]::Floor($i / $chunkSize) + 1
         Info "  Chunk $chunkNum / $totalChunks"
         fly ssh console --app $APP --command "python3 -c `"open('/tmp/_db_upload.b64','a').write('$chunk')`"" 2>$null
-        if ($LASTEXITCODE -ne 0) { Fail "Failed on chunk $chunkNum" }
+        if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = 'Stop'; Fail "Failed on chunk $chunkNum" }
     }
 
     # Decode and write to final destination
     Info "Decoding and writing to ${FLY_DATA_DIR}/${RemoteName}..."
     $result = fly ssh console --app $APP --command "python3 -c `"import base64; d=base64.b64decode(open('/tmp/_db_upload.b64').read()); open('$FLY_DATA_DIR/$RemoteName','wb').write(d); open('/tmp/_db_upload.b64','w').close(); print('Written',len(d),'bytes')`"" 2>$null
-    if ($LASTEXITCODE -ne 0) { Fail "Failed to finalise upload: $result" }
+    if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = 'Stop'; Fail "Failed to finalise upload: $result" }
 
+    $ErrorActionPreference = 'Stop'
     Success "$Label uploaded: $result"
 }
 
