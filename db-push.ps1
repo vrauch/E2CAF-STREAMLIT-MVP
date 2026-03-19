@@ -81,17 +81,21 @@ function Push-DB {
         return
     }
 
-    # Delete the remote file first (fly sftp put refuses to overwrite)
-    $ErrorActionPreference = 'SilentlyContinue'
+    # fly ssh sftp shell's `put` refuses to overwrite existing files, so delete first.
+    # fly ssh console --command handles simple shell commands reliably from PowerShell.
+    Info "Removing existing remote file (if any)..."
     fly ssh console --app $APP --command "rm -f $FLY_DATA_DIR/$RemoteName" 2>$null
-    $ErrorActionPreference = 'Stop'
-    if ($LASTEXITCODE -ne 0) { Fail "Could not remove existing remote file $FLY_DATA_DIR/$RemoteName" }
 
-    # Upload via fly sftp put
-    fly ssh sftp put $absPath $FLY_DATA_DIR/$RemoteName --app $APP
-    if ($LASTEXITCODE -ne 0) { Fail "SFTP upload failed for $Label" }
+    # Upload via SFTP. PowerShell's pipe sends the text to fly's stdin correctly here
+    # because fly ssh sftp shell reads a command stream (not a PTY).
+    Info "Uploading via SFTP..."
+    "put `"$absPath`" $FLY_DATA_DIR/$RemoteName`nexit" | fly ssh sftp shell --app $APP
+    if ($LASTEXITCODE -ne 0) { Fail "SFTP upload failed for $Label (exit code $LASTEXITCODE)" }
 
-    Success "$Label uploaded to $FLY_DATA_DIR/$RemoteName"
+    # Verify
+    $remoteBytes = fly ssh console --app $APP --command "wc -c < $FLY_DATA_DIR/$RemoteName" 2>$null
+    $localBytes  = (Get-Item $LocalPath).Length
+    Success "$Label uploaded (local: $localBytes bytes, remote: $($remoteBytes.Trim()) bytes)"
 }
 
 # ── Push framework DB ─────────────────────────────────────────────────────────
