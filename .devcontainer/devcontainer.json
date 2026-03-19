@@ -1,0 +1,4 @@
+{
+    "name": "My App",
+    "postCreateCommand": "sqlite3 data/meridant.db < seed.sql && sqlite3 data/meridant_frameworks.db < seed_frameworks.sql"
+}
