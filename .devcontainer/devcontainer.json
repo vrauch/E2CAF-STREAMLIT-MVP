@@ -1,0 +1,11 @@
+{
+    "name": "My App",
+    "features": {
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+    },
+    "postCreateCommand": "bash setup.sh",
+    "postStartCommand": "bash start.sh",
+    "forwardPorts": [
+        8501
+    ]
+}
