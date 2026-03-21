@@ -13,5 +13,5 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/*.bak
-CLAUDE.md
+# CLAUDE.md
 auth_config.yaml
