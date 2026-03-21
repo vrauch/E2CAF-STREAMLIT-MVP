@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Seed 6 comprehensive test assessments into the E2CAF database.
+"""Seed 6 comprehensive test assessments into the Meridant database.
 
 Assessments:
   1. Viennalife Insurance AG     / Enterprise Baseline Assessment  (maturity_1_5)
@@ -538,7 +538,7 @@ def assessment_viennalife(rng):
 
     intent_text = (
         "Viennalife Insurance AG is undertaking an enterprise baseline assessment to establish "
-        "a current-state maturity profile across all E2CAF domains. The primary focus is on "
+        "a current-state maturity profile across all MMTF domains. The primary focus is on "
         "AI governance, regulatory compliance, and security posture given the evolving EU AI Act "
         "obligations and Solvency II capital risk requirements. This assessment will inform the "
         "FY26 transformation roadmap, prioritising investments in responsible AI, supply chain "

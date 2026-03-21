@@ -1,0 +1,475 @@
+/* MERIDANT MATRIX - app.css
+   Body baseline: 1rem
+   Headings h1=1.5rem h2=1.25rem h3=1.15rem h4=1.05rem
+   All headings: JetBrains Mono, uppercase, 0.16em tracking, #6B7280
+*/
+
+/* 1. BODY & ROOT */
+html,
+body,
+.stApp {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 1rem;
+  color: #111827;
+  line-height: 1.5;
+  background: #F9FAFB;
+}
+
+/* 2. SANS-SERIF OVERRIDE — [attr]+element = specificity 0,1,1 beats emotion .class = 0,1,0 */
+[data-testid="stAppViewContainer"] span,
+[data-testid="stAppViewContainer"] div,
+[data-testid="stAppViewContainer"] label,
+[data-testid="stAppViewContainer"] li,
+[data-testid="stAppViewContainer"] td,
+[data-testid="stAppViewContainer"] th,
+[data-testid="stAppViewContainer"] a,
+[data-testid="stAppViewContainer"] small,
+[data-testid="stAppViewContainer"] strong,
+[data-testid="stAppViewContainer"] em,
+[data-testid="stAppViewContainer"] b,
+[data-testid="stAppViewContainer"] caption,
+[data-testid="stAppViewContainer"] summary,
+[data-testid="stAppViewContainer"] p {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+/* 3. HEADING SCALE - sizes */
+[data-testid="stAppViewContainer"] h1,
+[data-testid="stAppViewContainer"] h1 *,
+[data-testid="stHeading"] h1,
+[data-testid="stHeading"] h1 *,
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h1 * {
+  font-size: 1.5rem !important;
+}
+
+[data-testid="stAppViewContainer"] h2,
+[data-testid="stAppViewContainer"] h2 *,
+[data-testid="stHeading"] h2,
+[data-testid="stHeading"] h2 *,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h2 * {
+  font-size: 1.25rem !important;
+}
+
+[data-testid="stAppViewContainer"] h3,
+[data-testid="stAppViewContainer"] h3 *,
+[data-testid="stHeading"] h3,
+[data-testid="stHeading"] h3 *,
+[data-testid="stMarkdownContainer"] h3,
+[data-testid="stMarkdownContainer"] h3 * {
+  font-size: 1.15rem !important;
+}
+
+[data-testid="stAppViewContainer"] h4,
+[data-testid="stAppViewContainer"] h4 *,
+[data-testid="stMarkdownContainer"] h4,
+[data-testid="stMarkdownContainer"] h4 * {
+  font-size: 1.05rem !important;
+}
+
+/* 3b. HEADING SCALE - style (all headings share these) */
+[data-testid="stAppViewContainer"] h1,
+[data-testid="stAppViewContainer"] h2,
+[data-testid="stAppViewContainer"] h3,
+[data-testid="stAppViewContainer"] h4,
+[data-testid="stAppViewContainer"] h1 *,
+[data-testid="stAppViewContainer"] h2 *,
+[data-testid="stAppViewContainer"] h3 *,
+[data-testid="stAppViewContainer"] h4 *,
+[data-testid="stHeading"] h1,
+[data-testid="stHeading"] h2,
+[data-testid="stHeading"] h3,
+[data-testid="stHeading"] h4,
+[data-testid="stHeading"] h1 *,
+[data-testid="stHeading"] h2 *,
+[data-testid="stHeading"] h3 *,
+[data-testid="stHeading"] h4 *,
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3,
+[data-testid="stMarkdownContainer"] h4,
+[data-testid="stMarkdownContainer"] h1 *,
+[data-testid="stMarkdownContainer"] h2 *,
+[data-testid="stMarkdownContainer"] h3 *,
+[data-testid="stMarkdownContainer"] h4 * {
+  font-family: 'JetBrains Mono', 'Courier New', Courier, monospace !important;
+  font-weight: 400 !important;
+  letter-spacing: 0.16em !important;
+  text-transform: uppercase !important;
+  color: #6B7280 !important;
+  line-height: 1.3 !important;
+  margin-bottom: .35rem !important;
+}
+
+/* 4. MONO - code, pre, data values */
+[data-testid="stAppViewContainer"] code,
+[data-testid="stAppViewContainer"] pre,
+[data-testid="stAppViewContainer"] kbd,
+[data-testid="stAppViewContainer"] samp,
+.stCode,
+.stCode * {
+  font-family: 'JetBrains Mono', 'Courier New', Courier, monospace !important;
+  font-size: 1rem !important;
+}
+
+/* 5. STREAMLIT WIDGETS */
+
+[data-testid="stWidgetLabel"] *,
+[data-testid="stFormLabel"] * {
+  font-size: 1rem !important;
+  color: #374151 !important;
+}
+
+[data-testid="stHelp"],
+[data-testid="stHelp"] *,
+[data-testid="stCaption"],
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] * {
+  font-size: .95rem !important;
+  color: #6B7280 !important;
+}
+
+[data-baseweb="input"] *,
+[data-baseweb="textarea"] *,
+[data-baseweb="base-input"] * {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-size: 1.05rem !important;
+}
+
+[data-testid="stSelectbox"] *,
+[data-testid="stMultiSelect"] *,
+[data-baseweb="select"] * {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-size: 1.05rem !important;
+}
+
+[data-baseweb="popover"] *,
+[data-baseweb="menu"] *,
+[data-baseweb="option"],
+[role="option"],
+[role="listbox"],
+[role="listbox"] * {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-size: 1.05rem !important;
+}
+
+[data-testid="stSlider"] * {
+  font-size: 1rem !important;
+}
+
+[data-testid="stRadio"] *,
+[data-testid="stCheckbox"] * {
+  font-size: 1.05rem !important;
+}
+
+[data-baseweb="tab-list"] *,
+[data-baseweb="tab"],
+[data-baseweb="tab"] * {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-size: 1.05rem !important;
+}
+
+[data-testid="stExpander"] summary,
+[data-testid="stExpander"] summary * {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-size: 1.05rem !important;
+}
+
+[data-testid="stAlert"] *,
+[data-testid="stInfo"] *,
+[data-testid="stWarning"] *,
+[data-testid="stError"] *,
+[data-testid="stSuccess"] * {
+  font-size: 1.05rem !important;
+}
+
+[data-testid="stDataFrame"] *,
+[data-testid="stTable"] * {
+  font-size: 1rem !important;
+}
+
+[data-testid="stMetricLabel"] * {
+  font-size: .95rem !important;
+  color: #6B7280 !important;
+}
+
+[data-testid="stMetricValue"] {
+  font-size: 1.85rem !important;
+  font-family: 'JetBrains Mono', monospace !important;
+}
+
+[data-testid="stMetricDelta"] {
+  font-size: 1rem !important;
+}
+
+[data-testid="stFileUploader"] * {
+  font-size: 1.05rem !important;
+}
+
+[data-testid="stDateInput"] *,
+[data-testid="stTimeInput"] * {
+  font-size: 1.05rem !important;
+}
+
+/* 6. BUTTONS */
+.stButton>button,
+button[data-testid^="baseButton-"],
+[data-testid="stAppViewContainer"] button[data-testid^="baseButton-"] {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-size: 1rem !important;
+  font-weight: 400 !important;
+  line-height: 1.5 !important;
+  padding: .25rem .6rem !important;
+  border-radius: .2rem !important;
+  min-height: unset !important;
+  height: auto !important;
+}
+
+.stButton>button *,
+button[data-testid^="baseButton-"] *,
+[data-testid="stAppViewContainer"] button[data-testid^="baseButton-"] * {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-size: 1rem !important;
+  font-weight: 400 !important;
+}
+
+/* 7. STRUCTURAL */
+[data-testid="stSidebar"],
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"] {
+  display: none !important;
+}
+
+[data-testid="stHeader"]>* {
+  display: none !important;
+}
+
+[data-testid="stHeader"] {
+  height: 68px !important;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  background: transparent !important;
+  z-index: 1 !important;
+}
+
+[data-testid="stMainBlockContainer"] {
+  width: 100% !important;
+  padding-right: 15px !important;
+  padding-left: 15px !important;
+  padding-top: 4.75rem !important;
+  padding-bottom: .5rem !important;
+  margin-right: auto !important;
+  margin-left: auto !important;
+}
+
+@media (min-width: 576px) {
+  [data-testid="stMainBlockContainer"] { max-width: 540px !important; }
+}
+
+@media (min-width: 768px) {
+  [data-testid="stMainBlockContainer"] { max-width: 720px !important; }
+}
+
+@media (min-width: 992px) {
+  [data-testid="stMainBlockContainer"] { max-width: 960px !important; }
+}
+
+@media (min-width: 1200px) {
+  [data-testid="stMainBlockContainer"] { max-width: 1140px !important; }
+}
+
+@media (min-width: 1400px) {
+  [data-testid="stMainBlockContainer"] { max-width: 1320px !important; }
+}
+
+/* 8. BRAND HEADER */
+#meridant-brand {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 68px;
+  background: #0F2744;
+  border-bottom: 1px solid #1e3a5f;
+  display: flex;
+  align-items: center;
+  padding: 0 1.25rem;
+  gap: 1rem;
+  z-index: 999999;
+}
+
+#meridant-brand .m-wordmark {
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  font-size: 20px !important;
+  font-weight: 300 !important;
+  letter-spacing: 0.08em;
+  line-height: 1.15;
+  color: #F9FAFB;
+}
+
+#meridant-brand .m-tagline {
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  font-size: 8px !important;
+  letter-spacing: 0.20em;
+  text-transform: uppercase;
+  color: #93C5FD;
+  margin-top: 3px;
+}
+
+.m-nav {
+  display: flex;
+  align-items: center;
+  gap: .15rem;
+  margin-left: auto;
+  margin-right: 2rem;
+}
+
+.m-nav-link {
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  font-size: 1rem !important;
+  font-weight: 500 !important;
+  color: #93C5FD !important;
+  text-decoration: none !important;
+  letter-spacing: .02em;
+  padding: .3rem .7rem;
+  border-radius: 6px;
+  transition: background .15s, color .15s;
+  white-space: nowrap;
+}
+
+.m-nav-link:hover {
+  background: rgba(255, 255, 255, .1);
+  color: #F9FAFB !important;
+}
+
+.m-nav-link.active {
+  background: rgba(37, 99, 235, .35);
+  color: #F9FAFB !important;
+  font-weight: 600 !important;
+}
+
+.m-user-area {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  white-space: nowrap;
+}
+
+.m-user-info {
+  line-height: 1.25;
+  text-align: right;
+}
+
+.m-user-label {
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  font-size: .85rem !important;
+  color: #93C5FD;
+}
+
+.m-user-name {
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  font-size: .97rem !important;
+  font-weight: 600 !important;
+  color: #F9FAFB;
+}
+
+.m-signout {
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  font-size: .95rem !important;
+  color: #93C5FD !important;
+  text-decoration: none !important;
+  padding: .2rem .45rem;
+  border-radius: 4px;
+  border: 1px solid rgba(147, 197, 253, .3);
+  transition: background .15s, color .15s;
+  white-space: nowrap;
+}
+
+.m-signout:hover {
+  background: rgba(255, 255, 255, .1);
+  color: #F9FAFB !important;
+}
+
+/* 9. HAMBURGER */
+.m-hamburger-wrap {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .m-nav {
+    display: none !important;
+  }
+
+  .m-hamburger-wrap {
+    display: flex;
+    align-items: center;
+  }
+}
+
+#m-menu-toggle {
+  display: none;
+}
+
+.m-hamburger-label {
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  transition: background .15s;
+}
+
+.m-hamburger-label:hover {
+  background: rgba(255, 255, 255, .1);
+}
+
+.m-hamburger-label span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: #F9FAFB;
+  border-radius: 1px;
+  transition: transform .2s, opacity .2s;
+}
+
+#m-menu-toggle:checked+.m-hamburger-label span:nth-child(1) {
+  transform: translateY(6px) rotate(45deg);
+}
+
+#m-menu-toggle:checked+.m-hamburger-label span:nth-child(2) {
+  opacity: 0;
+  transform: scaleX(0);
+}
+
+#m-menu-toggle:checked+.m-hamburger-label span:nth-child(3) {
+  transform: translateY(-6px) rotate(-45deg);
+}
+
+.m-nav-mobile {
+  display: none;
+  position: fixed;
+  top: 68px;
+  right: 0;
+  width: 100%;
+  background: #0F2744;
+  border-bottom: 2px solid #1e3a5f;
+  flex-direction: column;
+  padding: .5rem .75rem;
+  z-index: 999998;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .35);
+}
+
+#m-menu-toggle:checked~.m-nav-mobile {
+  display: flex;
+}
+
+.m-nav-mobile .m-nav-link {
+  font-size: 1.1rem !important;
+  padding: .6rem .75rem;
+  display: block;
+}

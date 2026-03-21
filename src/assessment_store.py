@@ -7,6 +7,7 @@ from src.meridant_client import MeridantClient
 _narrative_column_ensured = False
 _consultant_column_ensured = False
 _framework_id_column_ensured = False
+_roadmap_progress_table_ensured = False
 
 
 def _ensure_narrative_column(client: MeridantClient) -> None:
@@ -488,6 +489,132 @@ def load_recommendations(client: MeridantClient, assessment_id: int) -> list[dic
         # Ensure in-memory key 'narrative' is always populated
         r["narrative"] = r.get("narrative") or ""
     return rows
+
+
+_roadmap_table_ensured = False
+
+
+def _ensure_roadmap_table(client: MeridantClient) -> None:
+    global _roadmap_table_ensured
+    if _roadmap_table_ensured:
+        return
+    client.write(
+        """
+        CREATE TABLE IF NOT EXISTS AssessmentRoadmap (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            assessment_id INTEGER NOT NULL,
+            roadmap_json TEXT NOT NULL,
+            timeline_unit TEXT,
+            horizon_months INTEGER,
+            scope TEXT,
+            generated_at TEXT DEFAULT (datetime('now'))
+        )
+        """,
+        [],
+    )
+    _roadmap_table_ensured = True
+
+
+def save_roadmap(
+    client: MeridantClient,
+    assessment_id: int,
+    roadmap: dict,
+    timeline_unit: str = "",
+    horizon_months: int = 12,
+    scope: str = "Core",
+) -> None:
+    """Persist the generated roadmap JSON for an assessment. Idempotent — replaces on re-generate."""
+    _ensure_roadmap_table(client)
+    client.write(
+        "DELETE FROM AssessmentRoadmap WHERE assessment_id = ?",
+        [assessment_id],
+    )
+    client.write(
+        """
+        INSERT INTO AssessmentRoadmap
+            (assessment_id, roadmap_json, timeline_unit, horizon_months, scope, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            assessment_id,
+            json.dumps(roadmap),
+            timeline_unit,
+            horizon_months,
+            scope,
+            datetime.now().isoformat(),
+        ],
+    )
+
+
+def load_roadmap(client: MeridantClient, assessment_id: int) -> dict | None:
+    """Load the persisted roadmap for an assessment. Returns None if not found."""
+    _ensure_roadmap_table(client)
+    res = client.query(
+        "SELECT * FROM AssessmentRoadmap WHERE assessment_id = ? ORDER BY id DESC LIMIT 1",
+        [assessment_id],
+    )
+    rows = res.get("rows", [])
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "roadmap": json.loads(row["roadmap_json"]),
+        "timeline_unit": row.get("timeline_unit") or "Sprints (2 wks)",
+        "horizon_months": row.get("horizon_months") or 12,
+        "scope": row.get("scope") or "Core",
+        "generated_at": row.get("generated_at"),
+    }
+
+
+def _ensure_roadmap_progress_table(client: MeridantClient) -> None:
+    global _roadmap_progress_table_ensured
+    if _roadmap_progress_table_ensured:
+        return
+    client.write(
+        """
+        CREATE TABLE IF NOT EXISTS AssessmentRoadmapProgress (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            assessment_id INTEGER NOT NULL,
+            initiative_id TEXT NOT NULL,
+            initiative_name TEXT,
+            status TEXT DEFAULT 'not_started',
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(assessment_id, initiative_id)
+        )
+        """,
+        [],
+    )
+    _roadmap_progress_table_ensured = True
+
+
+def save_roadmap_progress(
+    client: MeridantClient,
+    assessment_id: int,
+    progress: dict,
+) -> None:
+    """Persist initiative progress. progress is {initiative_id: status}."""
+    _ensure_roadmap_progress_table(client)
+    for init_id, status in progress.items():
+        client.write(
+            """
+            INSERT INTO AssessmentRoadmapProgress
+                (assessment_id, initiative_id, status, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(assessment_id, initiative_id)
+            DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at
+            """,
+            [assessment_id, init_id, status, datetime.now().isoformat()],
+        )
+
+
+def load_roadmap_progress(client: MeridantClient, assessment_id: int) -> dict:
+    """Load initiative progress. Returns {initiative_id: status}."""
+    _ensure_roadmap_progress_table(client)
+    res = client.query(
+        "SELECT initiative_id, status FROM AssessmentRoadmapProgress WHERE assessment_id = ?",
+        [assessment_id],
+    )
+    return {r["initiative_id"]: r["status"] for r in res.get("rows", [])}
 
 
 def list_assessments(client: MeridantClient, consultant_name: str | None = None) -> list[dict]:

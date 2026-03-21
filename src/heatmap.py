@@ -169,7 +169,7 @@ def render_heatmap_html(dom_scores: list[dict]) -> str:
 <html><head>
 <meta charset="UTF-8">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   body {{ font-family:'Inter',sans-serif; background:#F9FAFB; padding:.5rem 0; }}
   table {{ border-collapse:collapse; width:100%; }}
@@ -218,7 +218,7 @@ def generate_heatmap_excel(
     use_case_name: str = "",
 ) -> bytes:
     """
-    Generate a .xlsx heatmap matching the HPE assessment-heatmap style.
+    Generate a .xlsx heatmap matching the Meridant Insight assessment-heatmap style.
     Returns raw bytes suitable for st.download_button().
     """
     from openpyxl import Workbook

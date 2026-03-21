@@ -6,7 +6,9 @@ from src.meridant_client import get_client
 from src.assessment_builder import analyze_use_case_readonly, CapabilityResult
 from src.assessment_store import (
     save_assessment, save_assessment_shell, upsert_capabilities, save_questions,
-    save_findings, save_narrative, list_assessments, load_assessment,
+    save_findings, save_narrative, load_assessment,
+    save_roadmap, load_roadmap,
+    save_roadmap_progress, load_roadmap_progress,
 )
 from src.question_generator import generate_questions_for_capability
 from src.sql_templates import (
@@ -264,13 +266,35 @@ def _hydrate_session_from_db(data: dict) -> None:
     st.session_state.responses_ai_scored   = _all_scored
     st.session_state.confirm_regen_narrative = False
     st.session_state.confirm_regen_recs      = False
-    st.session_state.roadmap_data          = None
+
+    # Restore recommendations for this specific assessment (always reload from DB to avoid
+    # stale data from a previously-viewed assessment bleeding into this one)
+    from src.assessment_store import load_recommendations as _load_recs
+    _recs = _load_recs(_fw_client, a["id"])
+    st.session_state.recommendations = _recs if _recs else None
+
+    # Restore roadmap if previously generated
+    _rmap = load_roadmap(_fw_client, a["id"])
+    if _rmap:
+        st.session_state.roadmap_data          = _rmap["roadmap"]
+        st.session_state.roadmap_timeline_unit = _rmap["timeline_unit"]
+        st.session_state.roadmap_horizon_months = _rmap["horizon_months"]
+        st.session_state.roadmap_scope         = _rmap["scope"]
+    else:
+        st.session_state.roadmap_data = None
+
+    # Restore roadmap progress
+    if a.get("id"):
+        st.session_state.roadmap_progress = load_roadmap_progress(_fw_client, a["id"])
+    else:
+        st.session_state.roadmap_progress = {}
 
     # ── Smart step detection — resume at the correct wizard step ──────────────
     # Determine where the assessment was interrupted based on what is saved in DB:
     #   No capabilities        → Step 1 (just started)
     #   Caps but no responses  → Step 3 (need to generate/re-load questions)
     #   Blank responses (all score=None AND answer=None) → Step 4 (questions saved, workshop pending)
+    #   Roadmap persisted      → Step 6 (roadmap already generated)
     #   Any scored response    → Step 5 (responses captured, show findings)
     #   status = 'complete'    → Step 5 (findings already computed)
     if not caps:
@@ -279,6 +303,8 @@ def _hydrate_session_from_db(data: dict) -> None:
         resume_step = 3
     elif all(r.get("score") is None and r.get("answer") is None for r in responses):
         resume_step = 4
+    elif _rmap:
+        resume_step = 6
     else:
         resume_step = 5
     st.session_state.wizard_step = resume_step
@@ -309,7 +335,6 @@ def _build_client_stated_context(responses: dict) -> str:
 
 def render():
     st.title("Create Assessment")
-    st.caption("Guided wizard. No database writes for this test.")
 
     # Init session state
     st.session_state.setdefault("use_case_name", "")
@@ -338,11 +363,11 @@ def render():
     st.session_state.setdefault("roadmap_timeline_unit", "Sprints (2 wks)")
     st.session_state.setdefault("roadmap_horizon_months", 6)
     st.session_state.setdefault("roadmap_scope", "Core")
+    st.session_state.setdefault("roadmap_progress", {})
     st.session_state.setdefault("responses_ai_scored", False)
     st.session_state.setdefault("recommendations", None)
     st.session_state.setdefault("confirm_regen_narrative", False)
     st.session_state.setdefault("confirm_regen_recs", False)
-    st.session_state.setdefault("show_new_form", False)
     st.session_state.setdefault("framework_id", 1)
     st.session_state.setdefault("framework_labels", {"level1": "Pillar", "level2": "Domain", "level3": "Capability"})
 
@@ -352,50 +377,7 @@ def render():
     if st.session_state.wizard_step == 1:
         st.subheader("Step 1 — Client & Use Case")
 
-        if not st.session_state.get("show_new_form", False):
-            # ── LOAD EXISTING ASSESSMENT ──────────────────────────────────────
-            st.markdown(
-                "Select a previously saved assessment to resume or review it, "
-                "or start a new one below."
-            )
-            _db = get_client()
-            assessment_rows = list_assessments(_db)
-            if assessment_rows:
-                def _fmt_assessment(r):
-                    status_label = "Complete" if r["status"] == "complete" else "In Progress"
-                    date = (r.get("created_at") or "")[:10]
-                    consultant = r.get("consultant_name", "") or ""
-                    label = f"{r['client_name']} — {r['use_case_name']}"
-                    if r.get("engagement_name"):
-                        label = f"{r['client_name']} · {r['engagement_name']} — {r['use_case_name']}"
-                    suffix = f"{status_label}, {date}"
-                    if consultant:
-                        suffix = f"{status_label}, {date}, {consultant}"
-                    return f"{label}  ({suffix})"
-
-                options_map = {_fmt_assessment(r): r["id"] for r in assessment_rows}
-                selected_label = st.selectbox("Saved assessments", list(options_map.keys()))
-                if st.button("Load Assessment", type="primary"):
-                    with st.spinner("Loading assessment..."):
-                        data = load_assessment(_db, options_map[selected_label])
-                    if data:
-                        _hydrate_session_from_db(data)
-                        st.rerun()
-                    else:
-                        st.error("Could not load the selected assessment.")
-            else:
-                st.info("No saved assessments found.")
-
-            st.divider()
-            if st.button("＋ Start New Assessment"):
-                st.session_state.show_new_form = True
-                st.rerun()
-            st.stop()
-
         # ── NEW ASSESSMENT FORM ───────────────────────────────────────────────
-        if st.button("← Back"):
-            st.session_state.show_new_form = False
-            st.rerun()
 
         st.markdown(
             "Enter the client details, name your use case, and describe the client intent. "
@@ -407,110 +389,8 @@ def render():
         mode = "custom"
         st.session_state.assessment_mode = "custom"
 
-        st.divider()
-
-        # ── FRAMEWORK SELECTOR — drives taxonomy labels and use case list ────
         _fw_db = get_client()
         _frameworks = get_frameworks(_fw_db)
-        if _frameworks:
-            _fw_options = {f["id"]: f["framework_name"] for f in _frameworks}
-            _fw_keys = list(_fw_options.keys())
-            _fw_current = st.session_state.get("framework_id", 1)
-            _fw_idx = _fw_keys.index(_fw_current) if _fw_current in _fw_keys else 0
-            selected_framework_id = st.selectbox(
-                "Assessment framework",
-                options=_fw_keys,
-                format_func=lambda x: _fw_options[x],
-                index=_fw_idx,
-                key="framework_selector",
-            )
-            if selected_framework_id != st.session_state.get("framework_id"):
-                st.session_state["framework_id"] = selected_framework_id
-                st.session_state["framework_labels"] = get_framework_labels(_fw_db, selected_framework_id)
-                st.rerun()
-            _fw_labels = st.session_state["framework_labels"]
-            st.caption(
-                f"Assessing against: **{_fw_labels['level1']}s** → "
-                f"**{_fw_labels['level2']}s** → **{_fw_labels['level3']}s**"
-            )
-        else:
-            selected_framework_id = st.session_state.get("framework_id", 1)
-
-        st.divider()
-
-        # ── PREDEFINED: use case selector lives OUTSIDE the form so changes
-        #    trigger immediate reruns and intent text refreshes live ──────────
-        if mode == "predefined":
-            db = get_client()
-            uc_rows = _load_predefined_usecases(db, st.session_state.get("framework_id", 1))
-
-            if not uc_rows:
-                st.warning("No predefined use cases found in the framework.")
-                st.stop()
-
-            uc_options = [{"id": None, "label": "— Select a use case —"}] + [
-                {"id": r["id"], "label": r["usecase_title"]} for r in uc_rows
-            ]
-            uc_labels = [o["label"] for o in uc_options]
-            uc_ids    = [o["id"]    for o in uc_options]
-
-            prior_id  = st.session_state.get("selected_usecase_id")
-            prior_idx = uc_ids.index(prior_id) if prior_id in uc_ids else 0
-
-            selected_idx = st.selectbox(
-                "Use case *",
-                options=range(len(uc_labels)),
-                format_func=lambda i: uc_labels[i],
-                index=prior_idx,
-                key="uc_selectbox",
-            )
-            selected_id    = uc_ids[selected_idx]
-            selected_label = uc_labels[selected_idx]
-
-            # Persist immediately so the form below picks it up
-            if selected_id != st.session_state.get("selected_usecase_id"):
-                st.session_state.selected_usecase_id = selected_id
-                st.session_state.use_case_name = selected_label if selected_id else ""
-                # Clear intent so it gets re-derived below
-                st.session_state.intent_text = ""
-
-            # ── Use case info card ────────────────────────────────────────
-            if selected_id is not None:
-                uc_detail = next((r for r in uc_rows if r["id"] == selected_id), None)
-                if uc_detail:
-                    with st.container(border=True):
-                        cols = st.columns([3, 1])
-                        with cols[0]:
-                            st.markdown(f"**{uc_detail['usecase_title']}**")
-                            if uc_detail.get("usecase_description"):
-                                st.caption(uc_detail["usecase_description"])
-                        with cols[1]:
-                            if uc_detail.get("owner_role"):
-                                st.caption(f"👤 {uc_detail['owner_role']}")
-
-                    if uc_detail.get("business_value"):
-                        st.info(f"💡 **Business value:** {uc_detail['business_value']}")
-
-                    cap_count_res = db.query(
-                        f"SELECT COUNT(*) AS cnt FROM Next_UseCaseCapabilityImpact WHERE usecase_id = {int(selected_id)}"
-                    )
-                    cnt = (cap_count_res.get("rows") or [{}])[0].get("cnt", 0)
-                    st.caption(f"📦 {cnt} capabilities mapped in the framework · interdependency expansion applied in Step 2")
-
-                    # Derive intent prefill from framework text (only if not already customised)
-                    if not st.session_state.intent_text and uc_detail:
-                        parts = []
-                        if uc_detail.get("usecase_description"):
-                            parts.append(uc_detail["usecase_description"])
-                        if uc_detail.get("business_value"):
-                            parts.append(uc_detail["business_value"])
-                        st.session_state.intent_text = " ".join(parts)
-
-        else:
-            selected_id    = None
-            selected_label = ""
-
-        st.divider()
 
         # ── The submission form — contains client fields + editable intent ─
         with st.form("step1_form", clear_on_submit=False):
@@ -550,6 +430,29 @@ def render():
                     value=st.session_state.get("client_country", ""),
                     placeholder="e.g., Australia",
                 )
+
+            st.divider()
+            st.markdown("#### Choose Assessment Framework")
+            if _frameworks:
+                _fw_options = {f["id"]: f["framework_name"] for f in _frameworks}
+                _fw_keys = list(_fw_options.keys())
+                _fw_current = st.session_state.get("framework_id", 1)
+                _fw_idx = _fw_keys.index(_fw_current) if _fw_current in _fw_keys else 0
+                selected_framework_id = st.selectbox(
+                    "Choose Assessment Framework",
+                    options=_fw_keys,
+                    format_func=lambda x: _fw_options[x],
+                    index=_fw_idx,
+                    key="framework_selector",
+                    label_visibility="collapsed",
+                )
+                _fw_labels = get_framework_labels(_fw_db, selected_framework_id)
+                st.caption(
+                    f"Assessing against: **{_fw_labels['level1']}s** → "
+                    f"**{_fw_labels['level2']}s** → **{_fw_labels['level3']}s**"
+                )
+            else:
+                selected_framework_id = st.session_state.get("framework_id", 1)
 
             st.divider()
             st.markdown("#### Use case & client intent")
@@ -610,11 +513,13 @@ def render():
 
         if strengthen_btn:
             # Save current form field values to session state so they survive the rerun
-            st.session_state.client_name     = client_name.strip()
-            st.session_state.engagement_name = engagement_name.strip()
-            st.session_state.client_industry = industry
-            st.session_state.client_sector   = sector
-            st.session_state.client_country  = country.strip()
+            st.session_state.client_name        = client_name.strip()
+            st.session_state.engagement_name    = engagement_name.strip()
+            st.session_state.client_industry    = industry
+            st.session_state.client_sector      = sector
+            st.session_state.client_country     = country.strip()
+            st.session_state["framework_id"]     = selected_framework_id
+            st.session_state["framework_labels"] = get_framework_labels(_fw_db, selected_framework_id)
             if mode == "custom":
                 st.session_state.use_case_name = use_case_name.strip()
             intent_to_strengthen = rough_intent.strip() or intent_text.strip()
@@ -651,6 +556,8 @@ def render():
             st.session_state.client_country     = country.strip()
             st.session_state.use_case_name      = use_case_name.strip()
             st.session_state.intent_text        = intent_text.strip()
+            st.session_state["framework_id"]     = selected_framework_id
+            st.session_state["framework_labels"] = get_framework_labels(_fw_db, selected_framework_id)
 
             # ── Predefined: load capabilities immediately, skip to 2b ──────
             if mode == "predefined":
@@ -666,6 +573,11 @@ def render():
 
                 # ── Save assessment shell to DB immediately ────────────────
                 db = get_client()
+                # Clear stale data from any previously-loaded assessment before saving new one
+                st.session_state.findings_narrative = None
+                st.session_state.recommendations    = None
+                st.session_state.roadmap_data        = None
+                st.session_state.roadmap_progress    = {}
                 st.session_state.assessment_id = save_assessment_shell(db, st.session_state)
 
                 st.success(
@@ -680,6 +592,11 @@ def render():
             else:
                 # ── Save assessment shell to DB immediately ────────────────
                 db = get_client()
+                # Clear stale data from any previously-loaded assessment before saving new one
+                st.session_state.findings_narrative = None
+                st.session_state.recommendations    = None
+                st.session_state.roadmap_data        = None
+                st.session_state.roadmap_progress    = {}
                 st.session_state.assessment_id = save_assessment_shell(db, st.session_state)
                 st.session_state.wizard_step = 2
                 st.rerun()
@@ -961,8 +878,18 @@ def render():
         # Progress
         total = len(questions)
         answered = len(responses)
-        st.progress(answered / total if total > 0 else 0)
-        st.caption(f"Progress: {answered} / {total} answered")
+        col_prog, col_save = st.columns([4, 1])
+        with col_prog:
+            st.progress(answered / total if total > 0 else 0)
+            st.caption(f"Progress: {answered} / {total} answered")
+        with col_save:
+            if st.button("💾 Save Progress", help="Save responses captured so far — you can resume later from the Assessments page."):
+                if st.session_state.get("assessment_id") and answered > 0:
+                    with st.spinner("Saving…"):
+                        save_assessment(get_client(), st.session_state)
+                    st.success(f"Saved {answered} response(s).")
+                elif answered == 0:
+                    st.warning("No responses to save yet.")
 
         # Group questions by role → domain → capability
         grouped = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -1456,7 +1383,7 @@ def render():
                           "core_caps", "upstream_caps", "downstream_caps", "domains_covered",
                           "questions", "responses", "findings_narrative", "domain_targets",
                           "assessment_id", "findings_saved",
-                          "assessment_mode", "selected_usecase_id", "show_new_form",
+                          "assessment_mode", "selected_usecase_id",
                           "roadmap_data", "responses_ai_scored", "recommendations",
                           "confirm_regen_narrative", "confirm_regen_recs"]:
                     if k in ["use_case_name", "intent_text", "client_name", "engagement_name",
@@ -1474,8 +1401,6 @@ def render():
                         st.session_state[k] = "predefined"
                     elif k in ("selected_usecase_id",):
                         st.session_state[k] = None
-                    elif k == "show_new_form":
-                        st.session_state[k] = False
                     else:
                         st.session_state[k] = []
                 st.session_state.wizard_step = 1
@@ -1495,7 +1420,7 @@ def render():
     if st.session_state.wizard_step == "5b":
         st.subheader("Step 5b — Gap Recommendations")
         st.caption(
-            "AI-generated per-capability recommendations grounded in E2CAF maturity "
+            "AI-generated per-capability recommendations grounded in MMTF maturity "
             "descriptors, actual assessment responses, and dependency context."
         )
 
@@ -1881,6 +1806,15 @@ def render():
                                 ),
                             )
                             st.session_state.roadmap_data = roadmap
+                            if st.session_state.get("assessment_id"):
+                                save_roadmap(
+                                    get_client(),
+                                    st.session_state.assessment_id,
+                                    roadmap,
+                                    timeline_unit=timeline_unit,
+                                    horizon_months=horizon_months,
+                                    scope=roadmap_scope,
+                                )
                         except Exception as e:
                             st.error(f"Could not generate roadmap: {e}")
 
@@ -1931,6 +1865,159 @@ def render():
                     file_name=f"Meridant_Insight_{_client_slug}_Roadmap.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+
+                # ── Progress Tracker ─────────────────────────────────────
+                st.divider()
+                st.markdown("### Roadmap Progress")
+
+                all_initiatives = []
+                for phase in roadmap.get("phases", []):
+                    for init in phase.get("initiatives", []):
+                        all_initiatives.append({
+                            "phase": phase.get("name", ""),
+                            "id": init.get("id") or init.get("name", ""),
+                            "name": init.get("name", ""),
+                            "domain": init.get("domain", ""),
+                            "priority": init.get("priority", ""),
+                            "capability_names": init.get("capability_names", []),
+                        })
+
+                if all_initiatives:
+                    progress = dict(st.session_state.get("roadmap_progress", {}))
+                    status_options = ["not_started", "in_progress", "complete"]
+                    status_labels  = {"not_started": "Not Started", "in_progress": "In Progress", "complete": "Complete"}
+
+                    # Summary counts
+                    n_complete    = sum(1 for i in all_initiatives if progress.get(i["id"]) == "complete")
+                    n_in_progress = sum(1 for i in all_initiatives if progress.get(i["id"]) == "in_progress")
+                    n_total       = len(all_initiatives)
+                    pc1, pc2, pc3 = st.columns(3)
+                    pc1.metric("Total Initiatives", n_total)
+                    pc2.metric("In Progress", n_in_progress)
+                    pc3.metric("Complete", n_complete)
+
+                    # Group by phase
+                    phases_seen = []
+                    for i in all_initiatives:
+                        if i["phase"] not in phases_seen:
+                            phases_seen.append(i["phase"])
+
+                    updated_progress = dict(progress)
+                    for phase_name in phases_seen:
+                        phase_inits = [i for i in all_initiatives if i["phase"] == phase_name]
+                        with st.expander(f"**{phase_name}** — {len(phase_inits)} initiative(s)", expanded=True):
+                            for init in phase_inits:
+                                init_id = init["id"]
+                                current_status = progress.get(init_id, "not_started")
+                                col_name, col_status = st.columns([3, 1])
+                                with col_name:
+                                    priority_colour = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🟢"}.get(init["priority"], "⚪")
+                                    st.markdown(f"{priority_colour} **{init['name']}** · *{init['domain']}*")
+                                with col_status:
+                                    new_status = st.selectbox(
+                                        "Status",
+                                        options=status_options,
+                                        format_func=lambda x: status_labels[x],
+                                        index=status_options.index(current_status),
+                                        key=f"prog_{init_id}",
+                                        label_visibility="collapsed",
+                                    )
+                                    updated_progress[init_id] = new_status
+
+                    btn_col1, btn_col2 = st.columns(2)
+                    with btn_col1:
+                        if st.button("💾 Save Progress", key="save_roadmap_progress_btn"):
+                            st.session_state.roadmap_progress = updated_progress
+                            if st.session_state.get("assessment_id"):
+                                save_roadmap_progress(
+                                    get_client(),
+                                    st.session_state.assessment_id,
+                                    updated_progress,
+                                )
+                            st.success("Progress saved.")
+
+                    with btn_col2:
+                        completed_count = sum(1 for v in updated_progress.values() if v == "complete")
+                        in_progress_count = sum(1 for v in updated_progress.values() if v == "in_progress")
+                        can_regen = (completed_count + in_progress_count) > 0
+
+                        if st.button(
+                            "🔄 Regenerate from Progress",
+                            key="regen_roadmap_progress_btn",
+                            type="primary",
+                            disabled=not can_regen,
+                            help="Adjusts capability scores based on completed/in-progress initiatives, then regenerates the roadmap for remaining gaps." if can_regen else "Mark at least one initiative as In Progress or Complete first.",
+                        ):
+                            # Save progress first
+                            st.session_state.roadmap_progress = updated_progress
+                            if st.session_state.get("assessment_id"):
+                                save_roadmap_progress(get_client(), st.session_state.assessment_id, updated_progress)
+
+                            # Adjust cap scores based on initiative progress
+                            import copy
+                            adjusted_caps = copy.deepcopy(cap_scores_list)
+                            for init in all_initiatives:
+                                init_id = init["id"]
+                                status  = updated_progress.get(init_id, "not_started")
+                                if status == "not_started":
+                                    continue
+                                factor = 1.0 if status == "complete" else 0.5
+                                for cap in adjusted_caps:
+                                    if cap["capability_name"] in init["capability_names"]:
+                                        gap       = cap["target"] - cap["avg_score"]
+                                        cap["avg_score"] = round(
+                                            min(cap["target"], cap["avg_score"] + gap * factor), 1
+                                        )
+                                        cap["gap"] = round(cap["target"] - cap["avg_score"], 1)
+
+                            # Recompute domain scores from adjusted caps
+                            dom_adjusted: dict[str, list] = {}
+                            for cap in adjusted_caps:
+                                dom_adjusted.setdefault(cap["domain"], []).append(cap["avg_score"])
+                            adjusted_dom_scores = [
+                                {
+                                    "domain": d,
+                                    "avg_score": round(sum(scores) / len(scores), 1),
+                                    "target": domain_targets.get(d, 3),
+                                    "gap": round(domain_targets.get(d, 3) - sum(scores) / len(scores), 1),
+                                }
+                                for d, scores in dom_adjusted.items()
+                            ]
+                            adjusted_overall = round(
+                                sum(c["avg_score"] for c in adjusted_caps) / len(adjusted_caps), 1
+                            ) if adjusted_caps else overall
+
+                            with st.spinner("Regenerating roadmap from progress…"):
+                                try:
+                                    new_roadmap = generate_roadmap_plan(
+                                        use_case_name=st.session_state.use_case_name,
+                                        intent_text=st.session_state.get("intent_text", ""),
+                                        cap_scores=adjusted_caps,
+                                        dom_scores=adjusted_dom_scores,
+                                        overall_score=adjusted_overall,
+                                        horizon_months=horizon_months,
+                                        scope=roadmap_scope,
+                                        recommendations=st.session_state.get("recommendations"),
+                                        client_name=st.session_state.get("client_name", ""),
+                                        client_industry=st.session_state.get("client_industry", ""),
+                                        client_country=st.session_state.get("client_country", ""),
+                                        client_stated_context=_build_client_stated_context(
+                                            st.session_state.get("responses", {})
+                                        ),
+                                    )
+                                    st.session_state.roadmap_data = new_roadmap
+                                    if st.session_state.get("assessment_id"):
+                                        save_roadmap(
+                                            get_client(),
+                                            st.session_state.assessment_id,
+                                            new_roadmap,
+                                            timeline_unit=timeline_unit,
+                                            horizon_months=horizon_months,
+                                            scope=roadmap_scope,
+                                        )
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Could not regenerate roadmap: {e}")
 
             st.divider()
 

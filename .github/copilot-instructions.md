@@ -1,6 +1,6 @@
 # Meridant Matrix — Copilot Instructions
 
-> Streamlit + SQLite capability maturity assessment platform for HPE consultants.
+> Streamlit + SQLite capability maturity assessment platform for Meridant consultants.
 > Full context lives in [CLAUDE.md](../CLAUDE.md). This file distils what an agent needs for day-to-day coding.
 
 ---
@@ -129,8 +129,8 @@ All prompts that return structured data must instruct: *"Return ONLY a JSON …,
 |---|---|
 | `meridant_client.py`, `MeridantClient` | `tmm_client.py`, `TMMClient` |
 | `MERIDANT_FRAMEWORKS_DB_PATH` env var | `TMM_DB_PATH` |
-| "Meridant Matrix" in UI text | "E2CAF Assessment Platform" |
-| Export: `Meridant_{SubBrand}_{Client}_{Date}.ext` | Any legacy `E2CAF_...` filename |
+| "Meridant Matrix" in UI text | any legacy platform name |
+| Export: `Meridant_{SubBrand}_{Client}_{Date}.ext` | any legacy filename convention |
 
 Sub-brands: **Meridant Matrix** (platform), **Meridant Index** (assessment engine), **Meridant Insight** (reporting), **Meridant Benchmarks** (framework library), **Meridant Studio** (config).
 

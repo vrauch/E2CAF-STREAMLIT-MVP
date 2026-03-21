@@ -23,8 +23,8 @@ _COL_W = [0.4, 1.7, 1.7, 2.3, 1.1, 1.1, 0.65, 0.9, 1.1]
 _COL_HEADERS = ["ID", "Client", "Engagement", "Use Case", "Framework", "Status", "Score", "Created", ""]
 
 _HDR_STYLE = (
-    "margin:0;padding:2px 0 6px;font-size:.7rem;font-weight:700;"
-    "color:#6B7280;text-transform:uppercase;letter-spacing:.07em"
+    "margin:0;padding:2px 0 6px;font-family:'JetBrains Mono',monospace;font-size:.7rem;font-weight:400;"
+    "color:#6B7280;text-transform:uppercase;letter-spacing:.16em"
 )
 
 
@@ -83,7 +83,7 @@ def _row(r: dict, fw_labels: dict) -> None:
             'border-radius:999px;font-size:.7rem;font-weight:600;white-space:nowrap">'
             'Complete</span>'
         )
-        btn_label = "Open →"
+        btn_label = "Open"
         btn_type  = "secondary"
     else:
         badge = (
@@ -91,7 +91,7 @@ def _row(r: dict, fw_labels: dict) -> None:
             'border-radius:999px;font-size:.7rem;font-weight:600;white-space:nowrap">'
             'In Progress</span>'
         )
-        btn_label = "Resume →"
+        btn_label = "Resume"
         btn_type  = "primary"
 
     cols = st.columns(_COL_W)

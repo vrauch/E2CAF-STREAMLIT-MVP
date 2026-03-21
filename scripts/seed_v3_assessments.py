@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Seed 6 comprehensive test assessments into the E2CAF database.
+Seed 6 comprehensive test assessments into the Meridant database.
 
 Each assessment covers 6-9 domains with 5-6 capabilities per domain,
 across all question types (maturity_1_5 / yes_no_evidence / free_text / mixed).
@@ -523,7 +523,7 @@ ENABLING_DEPS_BY_DOMAIN = {
 # ── Narrative templates per use case ─────────────────────────────────────────
 NARRATIVE_TEMPLATES = {
     31: (
-        "{client} engaged HPE Consulting to undertake a General IT Readiness & Maturity Assessment spanning "
+        "{client} engaged Meridant to undertake a General IT Readiness & Maturity Assessment spanning "
         "{domain_count} domains and {cap_count} capabilities. The assessment reveals an overall maturity score "
         "of {score:.1f} out of 5.0, indicating a {maturity_label} level of IT capability maturity. "
         "Key strengths were identified in {strong_domain}, where consistent processes and measurement frameworks "
@@ -534,7 +534,7 @@ NARRATIVE_TEMPLATES = {
         "capability investments required to close the most impactful gaps within the next 12 months."
     ),
     27: (
-        "{client} commissioned HPE Consulting to conduct an Operating Model Modernization Assessment across "
+        "{client} commissioned Meridant to conduct an Operating Model Modernization Assessment across "
         "{domain_count} domains and {cap_count} capabilities. The organisation achieved an overall maturity "
         "score of {score:.1f}, reflecting a {maturity_label} capability baseline. The assessment reveals "
         "strong People and Strategy capabilities offset by emerging gaps in DevOps and Operational maturity. "
@@ -544,7 +544,7 @@ NARRATIVE_TEMPLATES = {
         "structures, and building the organisational capabilities required to sustain a modernised operating model."
     ),
     30: (
-        "{client} engaged HPE Consulting to assess AI Readiness & Maturity across {domain_count} domains "
+        "{client} engaged Meridant to assess AI Readiness & Maturity across {domain_count} domains "
         "and {cap_count} capabilities. The overall maturity score of {score:.1f} indicates a {maturity_label} "
         "AI capability baseline. The organisation demonstrates nascent strengths in data management, offset "
         "by significant gaps in AI governance, MLOps, and responsible AI practices. "
@@ -554,7 +554,7 @@ NARRATIVE_TEMPLATES = {
         "before the organisation can scale AI-driven value creation responsibly."
     ),
     32: (
-        "{client} engaged HPE Consulting to undertake a Datacentre Transformation Assessment across "
+        "{client} engaged Meridant to undertake a Datacentre Transformation Assessment across "
         "{domain_count} domains and {cap_count} capabilities. The overall maturity score of {score:.1f} "
         "reflects a {maturity_label} transformation baseline. The assessment identifies gaps in security "
         "automation, infrastructure modernisation, and operational tooling as the primary areas requiring "
@@ -564,7 +564,7 @@ NARRATIVE_TEMPLATES = {
         "datacentre modernisation journey."
     ),
     "default": (
-        "{client} engaged HPE Consulting to assess capability maturity across {domain_count} domains and "
+        "{client} engaged Meridant to assess capability maturity across {domain_count} domains and "
         "{cap_count} capabilities. The overall maturity score of {score:.1f} out of 5.0 indicates a "
         "{maturity_label} level of capability. Key investment priorities have been identified across "
         "{p1_count} P1-priority recommendations that represent the most critical gaps to address. "
@@ -990,12 +990,8 @@ def seed_assessment(conn: sqlite3.Connection, spec: dict, rng: random.Random) ->
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, rec_rows)
 
-    # ── 8. Executive summary narrative ────────────────────────────────────
-    sorted_domains = sorted(domain_scores.items(), key=lambda x: x[1])
-    p1_count = sum(1 for r in rec_rows if r[9] == "P1")
-    narrative = _build_narrative(spec, len(domain_scores), len(all_caps), overall, p1_count, sorted_domains)
-
-    cur.execute("UPDATE Assessment SET findings_narrative = ? WHERE id = ?", [narrative, assessment_id])
+    # ── 8. Executive summary narrative — intentionally omitted from seed ──
+    # Narratives are generated on demand by the consultant in Step 5.
 
     conn.commit()
 

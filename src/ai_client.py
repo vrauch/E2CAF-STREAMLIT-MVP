@@ -331,7 +331,7 @@ def generate_gap_recommendations(
     )
 
     phase_hint = (
-        f"The E2CAF framework places this capability in Phase {framework_phase} "
+        f"The MMTF framework places this capability in Phase {framework_phase} "
         f"of the transformation journey."
         if framework_phase
         else "No framework phase constraint applies."
