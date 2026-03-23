@@ -1,7 +1,7 @@
 # CLAUDE.md — Meridant Matrix
 
 > Project briefing for Claude Code. Read this at the start of every session.
-> Maintained by: Vernon Rauch | Last updated: 2026-03-20
+> Maintained by: Vernon Rauch | Last updated: 2026-03-23
 
 ---
 
@@ -493,7 +493,8 @@ Each assessment has: 3 questions per capability, 8 gap recommendations, executiv
 - `Next_ValueTheme` table is empty — value theme assignment for roadmap steps not yet implemented
 - Dashboard awareness of completed assessments — summary widget not yet built
 - Roadmap persistence to DB (currently session-only)
-- Word/PowerPoint export of full assessment report (findings + recommendations + roadmap)
+- **Priority 4.1** — Word document export (`python-docx`)
+- **Priority 4.2** — Executive Readout PowerPoint (`python-pptx`) — cover, exec summary, heatmap, top gaps, roadmap, next steps
 - **Priority 8.3** — `Next_*` → `Framework_*` table rename (highest-effort part of Priority 8, still pending)
 - NIST CSF 2 framework seed (`scripts/seed_nist_csf2.py`) — in development; `Next_Framework` registry is ready to receive it
 
@@ -693,13 +694,22 @@ Features are grouped by theme and sequenced by priority. Within each group, item
 - New module using `python-docx`
 - Sections: Cover page (client, engagement, consultant, date), Executive Summary (from `Assessment.findings_narrative`), Domain Findings (heatmap summary table), Capability Gap Analysis (from `AssessmentFinding`), Recommendations (from `AssessmentRecommendation` — P1/P2/P3 grouped), Transformation Roadmap (phase summary + Gantt reference), Appendix (capability list with scores)
 - Triggered from assessment detail view and Step 6 export panel
-- Filename convention: `E2CAF_Assessment_{ClientName}_{Date}.docx`
+- Filename convention: `Meridant_Insight_{ClientName}_{Date}.docx`
 - Add `python-docx` to `requirements.txt` and rebuild image
 
-**4.2 — PowerPoint export (stretch goal — after 4.1)**
-- Slide deck version of the report for client presentation
+**4.2 — Executive Readout presentation (`src/report_presenter.py`)**
+- Consulting-grade PowerPoint deck for client-facing delivery, generated from a completed assessment
 - Use `python-pptx`
-- Minimum viable: title slide, executive summary slide, domain heatmap slide, top 5 recommendations slide, roadmap Gantt slide
+- Slide structure (proposed):
+  1. Cover — client name, engagement, consultant, date, Meridant Insight branding
+  2. Executive Summary — `Assessment.findings_narrative` as speaker notes + key stats (domains assessed, capability count, overall maturity score)
+  3. Maturity Heatmap — rendered as a formatted table slide (domain × L1–L5)
+  4. Top Gaps — P1 recommendations summary (capability, current score, target, gap)
+  5. Transformation Roadmap — phase timeline (Gantt-style table or visual)
+  6. Next Steps — editable placeholder slide for consultant to customise
+- Add `python-pptx` to `requirements.txt` and rebuild image
+- Filename convention: `Meridant_Insight_{ClientName}_{Date}.pptx`
+- Triggered from Step 6 export panel and (once built) assessment detail view
 
 ---
 
@@ -802,6 +812,55 @@ Sync scripts committed to repo. Use these instead of raw `fly ssh sftp` commands
 **8.5 — `.gitignore` and `.env.example` updates** ✅ COMPLETE
 
 `.gitignore` covers `data/*.db`, `.env`, `auth_config.yaml`. `.env.example` documents all current vars with `MERIDANT_FRAMEWORKS_DB_PATH` + `MERIDANT_ASSESSMENTS_DB_PATH`.
+
+---
+
+### Priority 9 — Wizard UX Improvements
+
+> Goal: Improve the Create Assessment wizard experience with better navigation and orientation cues.
+
+**9.1 — Breadcrumb navigation across wizard steps** ✅ COMPLETE (2026-03-23)
+- Breadcrumb bar renders above each step heading via `_render_breadcrumbs()` in `create_assessment.py`
+- Completed steps: dark blue underlined text, clickable — navigates back to that step
+- Current step: bold navy text with indigo background pill
+- Future steps: greyed-out text
+- Implementation: Bootstrap HTML component (`st.components.v1.html()`) for visual display; hidden Streamlit `st.button` elements as JS-triggered navigation bridges
+- `completed_steps` set tracked in `st.session_state`; populated at every forward navigation point; restored correctly on assessment resume via `_hydrate_session_from_db()`
+- `_get_wizard_steps(mode)` helper: returns ordered step list, hides Step 2 (Capability Discovery) for predefined mode
+- Step numbering adapts: 8 steps for custom mode, 7 steps for predefined mode (step 2 omitted)
+- "Start New Assessment" clears `completed_steps`
+
+---
+
+### Priority 10 — White Label Branding
+
+> Goal: Allow the platform to be rebranded at two levels — per-deployment (reseller/partner ships the app under their own brand) and per-client (assessment exports carry the client's logo and colours).
+
+**10.1 — Deployment-level branding config**
+- New `branding_config.yaml` (or `.env` vars) that overrides Meridant defaults:
+  - `BRAND_NAME` — wordmark text (default: "meridant")
+  - `BRAND_TAGLINE` — header tagline (default: "Map the gap.  Chart the path.")
+  - `BRAND_LOGO_PATH` — path to SVG or PNG logo file (replaces the polyline SVG in `app.py`)
+  - `BRAND_PRIMARY_COLOR` — replaces `#0F2744` (navy)
+  - `BRAND_ACCENT_COLOR` — replaces `#2563EB` (accent blue)
+  - `BRAND_FOOTER_TEXT` — footer copyright line
+- `app.py` reads brand config at startup and injects into header/footer HTML and CSS variables
+- CSS custom properties (`--brand-primary`, `--brand-accent`) set on `:root` so all components inherit
+- Volume-mountable on Fly.io alongside `auth_config.yaml`; committed template `.branding_config.example.yaml`
+
+**10.2 — Per-client export branding**
+- `Client` table gains optional columns: `logo_path TEXT`, `brand_primary TEXT`, `brand_accent TEXT`
+- Client management panel (Priority 3.1) exposes logo upload + colour pickers
+- Logo stored in `data/client_logos/{client_id}.png` (gitignored); path recorded in `Client.logo_path`
+- All export functions accept optional brand overrides:
+  - `generate_heatmap_excel()` — client logo in header row, brand colours for highlights
+  - `generate_roadmap_excel()` — client logo on cover sheet
+  - Word export (`report_writer.py`, Priority 4.1) — client logo on cover page, brand accent for headings
+  - PowerPoint export (`report_presenter.py`, Priority 4.2) — client logo on title slide and footer
+- Falls back to deployment brand (10.1) or Meridant defaults when no client brand is set
+- Implementation note: `openpyxl` supports image insertion via `add_image()`; `python-pptx` via `add_picture()`
+
+**Dependency order:** 10.1 can be built independently. 10.2 depends on Priority 3.1 (client management panel) for the logo upload UI, and on Priority 4.1/4.2 for document exports.
 
 ---
 

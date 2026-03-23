@@ -1,3 +1,4 @@
+import base64
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -9,6 +10,8 @@ from src.assessment_store import (
     save_findings, save_narrative, load_assessment,
     save_roadmap, load_roadmap,
     save_roadmap_progress, load_roadmap_progress,
+    save_respondent_responses, load_respondent_sets,
+    reset_assessment_data,
 )
 from src.question_generator import generate_questions_for_capability
 from src.sql_templates import (
@@ -52,6 +55,8 @@ Return ONLY the rewritten intent text — no preamble, no quotes, no explanation
     )
     return response.content[0].text.strip()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers for predefined use case loading
@@ -264,8 +269,12 @@ def _hydrate_session_from_db(data: dict) -> None:
         if v.get("answer") or (v.get("response_type") == "maturity_1_5")
     )
     st.session_state.responses_ai_scored   = _all_scored
-    st.session_state.confirm_regen_narrative = False
-    st.session_state.confirm_regen_recs      = False
+    st.session_state.confirm_regen_narrative  = False
+    st.session_state.confirm_regen_recs       = False
+    st.session_state.confirm_regen_questions  = False
+    st.session_state.confirm_rediscover       = False
+    st.session_state.show_questions_table     = False
+    st.session_state.respondent_sets          = load_respondent_sets(_fw_client, a["id"])
 
     # Restore recommendations for this specific assessment (always reload from DB to avoid
     # stale data from a previously-viewed assessment bleeding into this one)
@@ -309,6 +318,20 @@ def _hydrate_session_from_db(data: dict) -> None:
         resume_step = 5
     st.session_state.wizard_step = resume_step
 
+    # ── Restore completed_steps for breadcrumb navigation ─────────────────────
+    _mode       = a.get("assessment_mode", "custom") or "custom"
+    _step_order = _get_wizard_steps(_mode)
+    _completed: set = set()
+    for _sk, _, _ in _step_order:
+        if _sk == resume_step:
+            break
+        _completed.add(_sk)
+    # If recommendations were loaded, step 5b was also previously completed
+    if _recs and resume_step in (5, 6):
+        _completed.add(5)
+        _completed.add("5b")
+    st.session_state.completed_steps = _completed
+
 
 def _build_client_stated_context(responses: dict) -> str:
     """
@@ -333,6 +356,239 @@ def _build_client_stated_context(responses: dict) -> str:
     return "\n".join(f"  - {t}" for t in unique)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Wizard breadcrumb navigation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_wizard_steps(mode: str = "custom") -> list[tuple]:
+    """Return ordered list of (step_key, display_num, label) for the wizard.
+
+    Step 2 (Capability Discovery) is included for custom mode only; it is
+    skipped (never shown) for predefined mode.
+    """
+    steps = [(1, "1", "Client & Use Case")]
+    if mode == "custom":
+        steps.append((2, "2", "Capability Discovery"))
+    steps += [
+        ("2b", "3" if mode == "custom" else "2", "Domain Targets"),
+        (3,    "4" if mode == "custom" else "3", "Questions"),
+        (4,    "5" if mode == "custom" else "4", "Responses"),
+        (5,    "6" if mode == "custom" else "5", "Findings"),
+        ("5b", "7" if mode == "custom" else "6", "Recommendations"),
+        (6,    "8" if mode == "custom" else "7", "Roadmap"),
+    ]
+    return steps
+
+
+_BS_CDN = (
+    '<link rel="stylesheet" '
+    'href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" '
+    'crossorigin="anonymous">'
+)
+_NAV_JS = """
+<script>
+function triggerNav(key){
+  var sel='[class*="st-key-_nav_btn_'+key+'"]';
+  var wrap=window.parent.document.querySelector(sel);
+  if(wrap){var btn=wrap.querySelector('button');if(btn)btn.click();}
+}
+// MutationObserver — applies inline styles to hidden triggers so they win
+// the specificity battle against Streamlit's emotion CSS (same (0,1,0) weight).
+(function(){
+  var HIDE='height:0!important;min-height:0!important;overflow:hidden!important;'+
+      'padding:0!important;margin:0!important;opacity:0!important;pointer-events:none!important;';
+  function hideEl(el){
+    if(el&&el.className&&typeof el.className==='string'&&
+       el.className.indexOf('st-key-_nav_btn_')!==-1){
+      el.setAttribute('style',HIDE);
+    }
+  }
+  function scanNode(node){
+    if(node.nodeType===1){hideEl(node);node.childNodes.forEach(scanNode);}
+  }
+  try{
+    scanNode(window.parent.document.body);
+    var obs=new window.parent.MutationObserver(function(muts){
+      muts.forEach(function(m){m.addedNodes.forEach(scanNode);});
+    });
+    obs.observe(window.parent.document.body,{childList:true,subtree:true});
+    setTimeout(function(){obs.disconnect();},5000);
+  }catch(e){}
+})();
+</script>"""
+
+
+def _render_nav_row(*buttons) -> dict:
+    """Render a Bootstrap btn-sm button row and return {key: bool} for clicked buttons.
+
+    Each button dict: label, key, style (Bootstrap suffix e.g. 'primary',
+    'outline-secondary'), disabled (optional bool).
+    """
+    triggers = {btn["key"]: st.button("_", key=f"_nav_btn_{btn['key']}") for btn in buttons}
+
+    btn_html = "".join(
+        f'<button class="btn btn-{b["style"]} btn-sm" '
+        f'onclick="triggerNav(\'{b["key"]}\')"'
+        f'{" disabled" if b.get("disabled") else ""}>{b["label"]}</button>'
+        for b in buttons
+    )
+    st.components.v1.html(
+        f'<!DOCTYPE html><html><head>{_BS_CDN}</head>'
+        f'<body style="background:transparent;margin:0;padding:6px 0;">'
+        f'<div class="d-flex gap-2 flex-wrap">{btn_html}</div>'
+        f'{_NAV_JS}</body></html>',
+        height=48,
+    )
+    return triggers
+
+
+def _export_btn_row(*items) -> None:
+    """Render a row of Bootstrap btn-sm download anchor tags.
+
+    Each item dict: label, data (bytes|str), filename, mime, style (optional, default 'outline-secondary').
+    """
+    links = []
+    for item in items:
+        data = item["data"]
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        b64 = base64.b64encode(data).decode()
+        mime = item.get("mime", "application/octet-stream")
+        style = item.get("style", "outline-secondary")
+        links.append(
+            f'<a href="data:{mime};base64,{b64}" download="{item["filename"]}" '
+            f'class="btn btn-{style} btn-sm">{item["label"]}</a>'
+        )
+    st.components.v1.html(
+        f'<!DOCTYPE html><html><head>{_BS_CDN}</head>'
+        f'<body style="background:transparent;margin:0;padding:6px 0;">'
+        f'<div class="d-flex gap-2 flex-wrap">{"".join(links)}</div>'
+        f'</body></html>',
+        height=48,
+    )
+
+
+def _render_breadcrumbs() -> None:
+    """Render wizard step breadcrumb navigation above the current step.
+
+    Completed steps render as dark clickable text links (navigate back to that step).
+    The current step renders as bold navy text.
+    Future steps render as greyed-out text.
+
+    Navigation uses hidden st.button bridges.  CSS collapses them to zero height
+    (opacity:0, height:0) so they are invisible but still in the DOM, allowing the
+    HTML component JS to call .click() on them programmatically.
+    display:none is intentionally avoided — it prevents .click() in some browsers.
+    """
+    current   = st.session_state.wizard_step
+    completed = st.session_state.get("completed_steps", set())
+    mode      = st.session_state.get("assessment_mode", "custom")
+    steps     = _get_wizard_steps(mode)
+
+    # ── CSS: hide nav-trigger button containers via the key class Streamlit injects ──
+    # Streamlit renders key="_bc_btn_1" as class "st-key-_bc_btn_1" on the wrapper div.
+    # aria-label is empty in Streamlit 1.45+ so we cannot use attribute selectors on it.
+    st.markdown(
+        """<style>
+        [class*="st-key-_bc_btn_"]{
+            height:0!important;min-height:0!important;
+            overflow:hidden!important;padding:0!important;margin:0!important;
+            opacity:0!important;pointer-events:none!important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+
+    # ── Hidden navigation trigger buttons (one per completed step) ────────────
+    nav_clicked = None
+    for key, _, _ in steps:
+        if key in completed:
+            if st.button(f"_bc_{key}_", key=f"_bc_btn_{key}"):
+                nav_clicked = key
+
+    if nav_clicked is not None:
+        st.session_state.wizard_step = nav_clicked
+        st.rerun()
+
+    # ── Build Bootstrap breadcrumb HTML ───────────────────────────────────────
+    crumb_parts = []
+    for key, num, name in steps:
+        is_current = key == current
+        is_done    = key in completed
+
+        if is_done:
+            crumb_parts.append(
+                f'<span class="bc bc-done" onclick="navTo(\'{key}\')" '
+                f'title="Return to {name}">{name}</span>'
+            )
+        elif is_current:
+            crumb_parts.append(f'<span class="bc bc-current">{name}</span>')
+        else:
+            crumb_parts.append(f'<span class="bc bc-future">{name}</span>')
+
+    sep   = '<span class="bc-sep">&gt;</span>'
+    trail = sep.join(crumb_parts)
+
+    html = f"""<!DOCTYPE html><html><head><style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:transparent;font-family:Inter,-apple-system,sans-serif;
+     font-size:13px;padding:4px 2px 6px;}}
+.breadcrumb-trail{{display:flex;align-items:center;flex-wrap:wrap;gap:1px;
+    border-bottom:1px solid #E5E7EB;padding-bottom:7px;}}
+.bc{{padding:2px 4px;white-space:nowrap;line-height:1.6;}}
+.bc-done{{color:#111827;cursor:pointer;text-decoration:underline;font-weight:500;}}
+.bc-done:hover{{color:#0F2744;text-decoration:underline;opacity:0.75;}}
+.bc-current{{color:#0F2744;font-weight:700;}}
+.bc-future{{color:#9CA3AF;}}
+.bc-sep{{color:#6B7280;font-size:13px;padding:0 4px;line-height:1.6;font-weight:500;}}
+</style></head><body>
+<div class="breadcrumb-trail">{trail}</div>
+<script>
+function navTo(stepKey){{
+    // Find trigger button by the st-key-_bc_btn_<key> class Streamlit adds to the wrapper.
+    try{{
+        var sel='[class*="st-key-_bc_btn_'+String(stepKey)+'"]';
+        var wrap=window.parent.document.querySelector(sel);
+        if(wrap){{
+            var btn=wrap.querySelector('button');
+            if(btn){{btn.click();return;}}
+        }}
+    }}catch(e){{console.warn('Breadcrumb nav error:',e);}}
+}}
+// Hide nav-trigger containers via the st-key class.
+// MutationObserver fires before paint so there is no visible flash.
+(function(){{
+    var HIDE='height:0!important;min-height:0!important;overflow:hidden!important;'+
+        'padding:0!important;margin:0!important;opacity:0!important;pointer-events:none!important;';
+    function hideEl(el){{
+        if(el&&el.className&&typeof el.className==='string'&&
+           el.className.indexOf('st-key-_bc_btn_')!==-1){{
+            el.style.cssText=HIDE;
+        }}
+    }}
+    function scanNode(n){{
+        if(!n)return;
+        hideEl(n);
+        if(n.querySelectorAll){{
+            n.querySelectorAll('[class*="st-key-_bc_btn_"]').forEach(function(el){{
+                el.style.cssText=HIDE;
+            }});
+        }}
+    }}
+    try{{
+        scanNode(window.parent.document.body);
+        var obs=new window.parent.MutationObserver(function(muts){{
+            muts.forEach(function(m){{m.addedNodes.forEach(scanNode);}});
+        }});
+        obs.observe(window.parent.document.body,{{childList:true,subtree:true}});
+        setTimeout(function(){{obs.disconnect();}},5000);
+    }}catch(e){{}}
+}})();
+</script></body></html>"""
+
+    components.html(html, height=48, scrolling=False)
+
+
 def render():
     st.title("Create Assessment")
 
@@ -355,6 +611,7 @@ def render():
     st.session_state.setdefault("domains_covered", {})
     st.session_state.setdefault("questions", [])
     st.session_state.setdefault("responses", {})
+    st.session_state.setdefault("respondent_sets", [])   # raw per-respondent uploads
     st.session_state.setdefault("findings_narrative", None)
     st.session_state.setdefault("domain_targets", {})
     st.session_state.setdefault("assessment_id", None)
@@ -368,14 +625,18 @@ def render():
     st.session_state.setdefault("recommendations", None)
     st.session_state.setdefault("confirm_regen_narrative", False)
     st.session_state.setdefault("confirm_regen_recs", False)
+    st.session_state.setdefault("confirm_regen_questions", False)
+    st.session_state.setdefault("confirm_rediscover", False)
     st.session_state.setdefault("framework_id", 1)
     st.session_state.setdefault("framework_labels", {"level1": "Pillar", "level2": "Domain", "level3": "Capability"})
+    st.session_state.setdefault("completed_steps", set())
 
     # -------------------------
     # STEP 1
     # -------------------------
     if st.session_state.wizard_step == 1:
-        st.subheader("Step 1 — Client & Use Case")
+        _render_breadcrumbs()
+        st.title("Step 1 — Client & Use Case")
 
         # ── NEW ASSESSMENT FORM ───────────────────────────────────────────────
 
@@ -394,7 +655,7 @@ def render():
 
         # ── The submission form — contains client fields + editable intent ─
         with st.form("step1_form", clear_on_submit=False):
-            st.markdown("#### Client details")
+            st.subheader("Client details")
             col_a, col_b = st.columns(2)
             with col_a:
                 client_name = st.text_input(
@@ -410,19 +671,23 @@ def render():
                 )
 
             col_c, col_d, col_e = st.columns(3)
+            _industry_opts = ["", "Education", "Financial Services", "Government",
+                              "Healthcare", "Manufacturing", "Retail", "Telecommunications",
+                              "Energy & Utilities", "Professional Services", "Other"]
+            _sector_opts = ["", "Public", "Private", "Non-Profit"]
+            _saved_industry = st.session_state.get("client_industry", "")
+            _saved_sector = st.session_state.get("client_sector", "")
             with col_c:
                 industry = st.selectbox(
                     "Industry",
-                    ["", "Education", "Financial Services", "Government",
-                     "Healthcare", "Manufacturing", "Retail", "Telecommunications",
-                     "Energy & Utilities", "Professional Services", "Other"],
-                    index=0,
+                    _industry_opts,
+                    index=_industry_opts.index(_saved_industry) if _saved_industry in _industry_opts else 0,
                 )
             with col_d:
                 sector = st.selectbox(
                     "Sector",
-                    ["", "Public", "Private", "Non-Profit"],
-                    index=0,
+                    _sector_opts,
+                    index=_sector_opts.index(_saved_sector) if _saved_sector in _sector_opts else 0,
                 )
             with col_e:
                 country = st.text_input(
@@ -432,7 +697,7 @@ def render():
                 )
 
             st.divider()
-            st.markdown("#### Choose Assessment Framework")
+            st.subheader("Choose Assessment Framework")
             if _frameworks:
                 _fw_options = {f["id"]: f["framework_name"] for f in _frameworks}
                 _fw_keys = list(_fw_options.keys())
@@ -455,7 +720,7 @@ def render():
                 selected_framework_id = st.session_state.get("framework_id", 1)
 
             st.divider()
-            st.markdown("#### Use case & client intent")
+            st.subheader("Use case & client intent")
 
             if mode == "custom":
                 use_case_name = st.text_input(
@@ -585,6 +850,7 @@ def render():
                     f"({len(core)} core · {len(upstream)} upstream · {len(downstream)} downstream). "
                     f"Skipping capability discovery — proceeding to target maturity."
                 )
+                st.session_state.completed_steps.add(1)
                 st.session_state.wizard_step = "2b"
                 st.rerun()
 
@@ -598,6 +864,7 @@ def render():
                 st.session_state.roadmap_data        = None
                 st.session_state.roadmap_progress    = {}
                 st.session_state.assessment_id = save_assessment_shell(db, st.session_state)
+                st.session_state.completed_steps.add(1)
                 st.session_state.wizard_step = 2
                 st.rerun()
 
@@ -605,24 +872,77 @@ def render():
     # STEP 2
     # -------------------------
     if st.session_state.wizard_step == 2:
-        st.subheader("Step 2 — Capability discovery (Core / Upstream / Downstream)")
+        _render_breadcrumbs()
+        st.title("Step 2 — Capability discovery (Core / Upstream / Downstream)")
         st.markdown(
             "Set the number of core capabilities and click **Run Capability Discovery**. "
-            "The AI will analyse your intent against the TMM library and classify capabilities "
+            "The AI will analyse your intent against the capability library and classify capabilities "
             "as Core, Upstream, or Downstream. Review the results, then continue to set domain targets."
         )
         st.write(f"**Use case:** {st.session_state.use_case_name}")
         st.write(f"**Intent:** {st.session_state.intent_text}")
 
-        st.info("This step reads from TMM only (no writes).")
 
         colA, colB = st.columns(2)
         with colA:
             core_k = st.slider("How many Core capabilities?", 5, 20, 10)
-        
-        run = st.button("Run Capability Discovery", type="primary")
 
-        if run:
+        _already_discovered = bool(st.session_state.core_caps)
+
+        # ── Confirm-before-overwrite guard ──────────────────────────────────────
+        if st.session_state.get("confirm_rediscover"):
+            st.error(
+                "⛔ **This will permanently delete all assessment data for this engagement.**\n\n"
+                "Re-running capability discovery will erase:\n"
+                "- All questions and responses (including uploaded respondent sets)\n"
+                "- All findings, scores, and the executive summary\n"
+                "- All gap recommendations\n\n"
+                "**This cannot be undone.** The assessment will restart from Step 2 with a new "
+                "capability set. Any work already completed will be lost."
+            )
+            _rediscover_confirm = _render_nav_row(
+                {"label": "Yes, delete everything and re-run",  "key": "s2_rediscover_yes",    "style": "danger"},
+                {"label": "Cancel — keep existing data",        "key": "s2_rediscover_cancel",  "style": "outline-secondary"},
+            )
+            if _rediscover_confirm["s2_rediscover_cancel"]:
+                st.session_state.confirm_rediscover = False
+                st.rerun()
+            run = _rediscover_confirm["s2_rediscover_yes"]
+            if run:
+                st.session_state.confirm_rediscover = False
+                # Wipe all downstream DB data for this assessment
+                if st.session_state.get("assessment_id"):
+                    reset_assessment_data(get_client(), st.session_state.assessment_id)
+                # Clear all downstream session state
+                for _k in ("questions", "responses", "findings_narrative", "domain_targets",
+                           "findings_saved", "responses_ai_scored", "recommendations",
+                           "roadmap_data", "respondent_sets"):
+                    if _k in ("questions",):
+                        st.session_state[_k] = []
+                    elif _k in ("responses", "domain_targets"):
+                        st.session_state[_k] = {}
+                    elif _k in ("findings_narrative", "roadmap_data", "recommendations"):
+                        st.session_state[_k] = None
+                    elif _k in ("findings_saved", "responses_ai_scored"):
+                        st.session_state[_k] = False
+                    elif _k == "respondent_sets":
+                        st.session_state[_k] = []
+                # Trim completed_steps back to step 1 only
+                st.session_state.completed_steps = {
+                    s for s in st.session_state.get("completed_steps", set()) if s == 1
+                }
+        else:
+            _btn_label = "Re-run Capability Discovery" if _already_discovered else "Run Capability Discovery"
+            run = bool(_render_nav_row(
+                {"label": _btn_label, "key": "s2_run", "style": "primary"},
+            )["s2_run"])
+            if run and _already_discovered:
+                # First click — show the confirm dialog instead of running
+                st.session_state.confirm_rediscover = True
+                st.rerun()
+        # ────────────────────────────────────────────────────────────────────────
+
+        if run and not st.session_state.get("confirm_rediscover"):
             client = get_client()
             candidates, core, upstream, downstream, covered, cap_count = analyze_use_case_readonly(
                 client=client,
@@ -630,57 +950,65 @@ def render():
                 core_k=core_k,
                 framework_id=st.session_state.get("framework_id", 1),
             )
-            st.caption(f"Capability library size (from TMM): {cap_count}")
+            st.caption(f"Capability library size: {cap_count}")
 
-            # Store results for later steps
+            # Store results in session state
             st.session_state.core_caps = [c.__dict__ for c in core]
             st.session_state.upstream_caps = [c.__dict__ for c in upstream]
             st.session_state.downstream_caps = [c.__dict__ for c in downstream]
             st.session_state.domains_covered = covered
 
+            # Persist to DB immediately so a session reset doesn't lose the discovery.
+            # domain_targets default to 3 here; Step 2b upsert_capabilities() will
+            # overwrite with the consultant's chosen targets.
+            if st.session_state.get("assessment_id"):
+                upsert_capabilities(client, st.session_state.assessment_id, st.session_state)
+
             st.success("Capability discovery complete.")
 
         # Show results if available
         if st.session_state.core_caps:
-            st.markdown("### Core capabilities")
+            st.subheader("Core capabilities")
             df_core = pd.DataFrame(st.session_state.core_caps)
             cols_to_show = [c for c in ["capability_name", "domain_name", "subdomain_name", "score", "rationale"] if c in df_core.columns]
-            st.dataframe(df_core[cols_to_show], width='stretch')
+            st.dataframe(df_core[cols_to_show], use_container_width=True)
 
-            st.markdown("### Upstream capabilities")
+            st.subheader("Upstream capabilities")
             df_up = pd.DataFrame(st.session_state.upstream_caps)
-            st.dataframe(df_up, width='stretch')
+            st.dataframe(df_up, use_container_width=True)
 
-            st.markdown("### Downstream capabilities")
+            st.subheader("Downstream capabilities")
             df_dn = pd.DataFrame(st.session_state.downstream_caps)
-            st.dataframe(df_dn, width='stretch')
+            st.dataframe(df_dn, use_container_width=True)
 
-            st.markdown("### Domains covered (derived from selected capabilities)")
+            st.subheader("Domains covered (derived from selected capabilities)")
             df_dom = pd.DataFrame(
                 [{"domain": k, "capability_count": v} for k, v in st.session_state.domains_covered.items()]
             ).sort_values("capability_count", ascending=False)
-            st.dataframe(df_dom, width='stretch')
+            st.dataframe(df_dom, use_container_width=True)
 
         # Navigation controls
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if st.button("Back to Step 1"):
-                st.session_state.wizard_step = 1
-
-        with col2:
-            if st.button("Continue: Set Domain Targets"):
-                if not st.session_state.core_caps:
-                    st.error("Run capability discovery first.")
-                else:
-                    st.session_state.wizard_step = "2b"
-                    st.rerun()
+        _nav2 = _render_nav_row(
+            {"label": "Back to Step 1",           "key": "s2_back",  "style": "outline-secondary"},
+            {"label": "Continue: Set Domain Targets", "key": "s2_cont", "style": "primary"},
+        )
+        if _nav2["s2_back"]:
+            st.session_state.wizard_step = 1
+            st.rerun()
+        if _nav2["s2_cont"]:
+            if not st.session_state.core_caps:
+                st.error("Run capability discovery first.")
+            else:
+                st.session_state.completed_steps.add(2)
+                st.session_state.wizard_step = "2b"
+                st.rerun()
     
     # -------------------------
     # STEP 2b — Domain Targets
     # -------------------------
     if st.session_state.wizard_step == "2b":
-        st.subheader("Step 2b — Set Target Maturity per Domain")
+        _render_breadcrumbs()
+        st.header("Step 2b — Set Target Maturity per Domain")
         st.markdown(
             "Set the target maturity level for each domain involved in this assessment. "
             "Use the sliders to adjust — the default is **3 (Defined)**. "
@@ -703,7 +1031,7 @@ def render():
         # Load existing targets or default to 3
         current_targets = st.session_state.domain_targets or {d: 3 for d in domains}
 
-        st.markdown("### Domain target maturity")
+        st.subheader("Domain target maturity")
         st.markdown(
             "| Level | Label | Meaning |\n"
             "|---|---|---|\n"
@@ -733,31 +1061,28 @@ def render():
                     )
 
         st.divider()
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Back to Step 2"):
-                st.session_state.wizard_step = 2
-                st.rerun()
-        with col2:
-            if st.button("Continue to Step 3", type="primary"):
-                st.session_state.domain_targets = new_targets
-                # ── Persist capabilities + domain targets to DB ────────────
-                if st.session_state.get("assessment_id"):
-                    db = get_client()
-                    upsert_capabilities(db, st.session_state.assessment_id, st.session_state)
-                st.session_state.wizard_step = 3
-                st.rerun()
+        _nav2b = _render_nav_row(
+            {"label": "Back to Step 2",    "key": "s2b_back", "style": "outline-secondary"},
+            {"label": "Continue to Step 3", "key": "s2b_cont", "style": "primary"},
+        )
+        if _nav2b["s2b_back"]:
+            st.session_state.wizard_step = 2
+            st.rerun()
+        if _nav2b["s2b_cont"]:
+            st.session_state.domain_targets = new_targets
+            if st.session_state.get("assessment_id"):
+                db = get_client()
+                upsert_capabilities(db, st.session_state.assessment_id, st.session_state)
+            st.session_state.completed_steps.add("2b")
+            st.session_state.wizard_step = 3
+            st.rerun()
                 
     # -------------------------
     # STEP 3
     # -------------------------
     if st.session_state.wizard_step == 3:
-        st.subheader("Step 3 — Generate assessment questions")
-        st.markdown(
-            "Choose which capability tiers to include, set the number of questions per capability, "
-            "and select a question style. Click **Generate Questions** to create the assessment instrument. "
-            "You can download the questions as a CSV for offline completion."
-        )
+        _render_breadcrumbs()
+        st.title("Step 3 — Generate assessment questions")
 
         if not st.session_state.core_caps:
             st.warning("No discovered capabilities found. Go back to Step 2 and run capability discovery.")
@@ -766,16 +1091,137 @@ def render():
                 st.rerun()
             st.stop()
 
-        include_upstream = st.checkbox("Include upstream capabilities", value=True)
-        include_downstream = st.checkbox("Include downstream capabilities", value=True)
+        st.session_state.setdefault("confirm_regen_questions", False)
+        st.session_state.setdefault("show_questions_table", False)
 
-        q_per_cap = st.slider("Questions per capability", 2, 7, 4)
-        style = st.selectbox(
-            "Question style",
-            ["Maturity (1–5)", "Evidence (Yes/No + notes)", "Workshop (discussion)"],
+        _has_questions = bool(st.session_state.questions)
+        _has_responses = any(
+            r.get("score") is not None or r.get("answer") is not None
+            for r in st.session_state.responses.values()
+        ) if isinstance(st.session_state.responses, dict) else bool(st.session_state.responses)
+
+        # ── Contextual intro paragraph ──
+        if not _has_questions:
+            st.markdown(
+                "Choose which capability tiers to include, set the number of questions per capability, "
+                "and select a question style. Click **Generate Questions** to create the assessment instrument. "
+                "You can download the questions as a CSV for offline completion."
+            )
+        elif _has_responses:
+            st.markdown(
+                f"**{len(st.session_state.questions)} questions** have been generated across "
+                f"**{len(st.session_state.domains_covered)} domains** and responses have been recorded. "
+                "The question set is locked — responses cannot be changed without starting a new assessment."
+            )
+        else:
+            st.markdown(
+                f"**{len(st.session_state.questions)} questions** have been generated across "
+                f"**{len(st.session_state.domains_covered)} domains.** "
+                "No responses have been recorded yet, so you can still regenerate the questions with different "
+                "settings if needed. You can also download the response template as a CSV for offline completion."
+            )
+
+        # ── Generation controls — hidden once questions exist (re-shown for regen confirm) ──
+        _show_controls = not _has_questions or st.session_state.confirm_regen_questions
+        if _show_controls:
+            include_upstream   = st.checkbox("Include upstream capabilities",   value=True)
+            include_downstream = st.checkbox("Include downstream capabilities", value=True)
+            st.subheader("Questions per capability")
+            q_per_cap = st.slider("Questions per capability", 2, 7, 4, label_visibility="collapsed")
+            st.subheader("Question style")
+            style = st.selectbox(
+                "Choose a question style",
+                ["Maturity (1–5)", "Evidence (Yes/No + notes)", "Workshop (discussion)"],
+            )
+        else:
+            include_upstream   = True
+            include_downstream = True
+            q_per_cap          = 4
+            style              = "Maturity (1–5)"
+
+        # ── Hidden Streamlit trigger buttons (zero-height, JS-clickable) ──
+        _trigger_gen  = st.button("_gen",  key="_step3_btn_gen")
+        _trigger_show = st.button("_show", key="_step3_btn_show")
+
+        # ── Bootstrap btn-sm button row ──
+        _gen_label = "Regenerate Questions" if _has_questions else "Generate Questions"
+        _gen_dis   = "disabled" if (_has_responses or st.session_state.confirm_regen_questions) else ""
+        _show_label = ("Hide Questions" if st.session_state.show_questions_table
+                       else f"Show Questions ({len(st.session_state.questions)})")
+
+        # Build show + download anchors (only when questions exist)
+        _extra_html = ""
+        if _has_questions:
+            _df_tmp = pd.DataFrame(st.session_state.questions)
+            _df_tmp["score"] = ""; _df_tmp["answer"] = ""; _df_tmp["notes"] = ""
+            _csv_b64  = base64.b64encode(_df_tmp.to_csv(index=False).encode("utf-8")).decode()
+            _csv_name = f"{st.session_state.use_case_name}_response_template.csv".replace(" ", "_")
+            _extra_html = (
+                f'<button class="btn btn-outline-secondary btn-sm" onclick="triggerStep3(\'show\')">{_show_label}</button>'
+                f'<a href="data:text/csv;base64,{_csv_b64}" download="{_csv_name}" class="btn btn-outline-secondary btn-sm">&#128196; Download Response Template (CSV)</a>'
+            )
+
+        _step3_hide_js = (
+            '(function(){'
+            'var H="height:0!important;min-height:0!important;overflow:hidden!important;'
+            'padding:0!important;margin:0!important;opacity:0!important;pointer-events:none!important;";'
+            'function hide(el){if(el&&el.className&&typeof el.className==="string"&&'
+            'el.className.indexOf("st-key-_step3_btn_")!==-1){el.setAttribute("style",H);}}'
+            'function scan(n){if(n.nodeType===1){hide(n);n.childNodes.forEach(scan);}}'
+            'try{scan(window.parent.document.body);'
+            'var o=new window.parent.MutationObserver(function(ms){'
+            'ms.forEach(function(m){m.addedNodes.forEach(scan);});});'
+            'o.observe(window.parent.document.body,{childList:true,subtree:true});'
+            'setTimeout(function(){o.disconnect();},5000);}catch(e){}'
+            '})()'
+        )
+        st.components.v1.html(
+            f'<!DOCTYPE html><html><head>{_BS_CDN}</head>'
+            f'<body style="background:transparent;margin:0;padding:6px 0;">'
+            f'<div class="d-flex gap-2 flex-wrap">'
+            f'<button class="btn btn-primary btn-sm" onclick="triggerStep3(\'gen\')" {_gen_dis}>{_gen_label}</button>'
+            f'{_extra_html}</div>'
+            f'<script>'
+            f'function triggerStep3(name){{'
+            f'var sel=\'[class*="st-key-_step3_btn_\'+name+\'"]\';\n'
+            f'var wrap=window.parent.document.querySelector(sel);'
+            f'if(wrap){{var btn=wrap.querySelector("button");if(btn)btn.click();}}}}'
+            f'{_step3_hide_js}'
+            f'</script>'
+            f'</body></html>',
+            height=48,
         )
 
-        if st.button("Generate Questions", type="primary"):
+        # ── Handle show/hide toggle ──
+        if _trigger_show and _has_questions:
+            st.session_state.show_questions_table = not st.session_state.show_questions_table
+            st.rerun()
+
+        # ── Handle generation state machine ──
+        _run_generation = False
+
+        if st.session_state.confirm_regen_questions:
+            st.warning(
+                "Are you sure? All current questions will be overwritten and cannot be recovered."
+            )
+            _confirm_col, _cancel_col = st.columns([1, 4])
+            with _confirm_col:
+                _do_regen = st.button("Yes, regenerate", type="primary")
+            with _cancel_col:
+                if st.button("Cancel"):
+                    st.session_state.confirm_regen_questions = False
+                    st.rerun()
+            if _do_regen:
+                st.session_state.confirm_regen_questions = False
+                _run_generation = True
+        elif _trigger_gen:
+            if _has_questions:
+                st.session_state.confirm_regen_questions = True
+                st.rerun()
+            else:
+                _run_generation = True  # first generation
+
+        if _run_generation:
             from src.question_generator import generate_questions_for_capability
 
             use_case = st.session_state.use_case_name
@@ -807,6 +1253,9 @@ def render():
 
             status.caption(f"Done — {len(questions)} questions generated.")
             st.session_state.questions = [q.__dict__ for q in questions]
+            if st.session_state.get("assessment_id"):
+                db = get_client()
+                save_questions(db, st.session_state.assessment_id, st.session_state.questions)
             st.success(f"Generated {len(questions)} questions across {total_caps} capabilities.")
 
         if st.session_state.questions:
@@ -814,14 +1263,9 @@ def render():
             df_q["score"] = ""
             df_q["answer"] = ""
             df_q["notes"] = ""
-            st.dataframe(df_q, width='stretch')
 
-            st.download_button(
-                "Download Questions (CSV)",
-                data=df_q.to_csv(index=False).encode("utf-8"),
-                file_name=f"{st.session_state.use_case_name}_questions.csv".replace(" ", "_"),
-                mime="text/csv",
-            )
+            if st.session_state.show_questions_table:
+                st.dataframe(df_q, use_container_width=True)
 
             # ── Show assessment ID for workshop reference ──────────────────
             _aid = st.session_state.get("assessment_id")
@@ -832,39 +1276,35 @@ def render():
                     "to Step 4 after your workshop."
                 )
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Back to Step 2"):
-                st.session_state.wizard_step = 2
+        st.divider()
+
+        _nav3 = _render_nav_row(
+            {"label": "Back to Step 2",    "key": "s3_back", "style": "outline-secondary"},
+            {"label": "Continue to Step 4", "key": "s3_cont", "style": "primary",
+             "disabled": not bool(st.session_state.questions)},
+        )
+        if _nav3["s3_back"]:
+            st.session_state.wizard_step = 2
+            st.rerun()
+        if _nav3["s3_cont"]:
+            if not st.session_state.questions:
+                st.error("Generate questions first.")
+            else:
+                if st.session_state.get("assessment_id"):
+                    db = get_client()
+                    save_questions(db, st.session_state.assessment_id, st.session_state.questions)
+                st.session_state.completed_steps.add(3)
+                st.session_state.wizard_step = 4
+                st.session_state.responses = {}
                 st.rerun()
-        with col2:
-            if st.button("Continue to Step 4"):
-                if not st.session_state.questions:
-                    st.error("Generate questions first.")
-                else:
-                    # ── Persist blank questions to DB before leaving Step 3 ─
-                    if st.session_state.get("assessment_id"):
-                        db = get_client()
-                        save_questions(
-                            db,
-                            st.session_state.assessment_id,
-                            st.session_state.questions,
-                        )
-                    st.session_state.wizard_step = 4
-                    st.session_state.responses = {}
-                    st.rerun()
 
     # -------------------------
     # STEP 4
     # -------------------------
     if st.session_state.wizard_step == 4:
-        st.subheader("Step 4 — Run Assessment")
-        st.markdown(
-            "Answer each question by selecting a score or response. Expand a capability to see its questions. "
-            "Alternatively, upload a completed CSV from Step 3 using the **Offline option** below. "
-            "Once you have answered enough questions, click **Submit Assessment** to save."
-        )
-
+        _render_breadcrumbs()
+        st.title("Step 4 — Run & Score Assessment")
+        
         if not st.session_state.questions:
             st.warning("No questions found. Go back to Step 3.")
             if st.button("Back to Step 3"):
@@ -875,21 +1315,56 @@ def render():
         questions = st.session_state.questions
         responses = st.session_state.responses
 
-        # Progress
+        st.session_state.responses = responses
+        # ── Offline / multi-respondent upload ──
+        st.subheader("Upload - Offline / Multi-respondent response sheets")
+        st.caption(
+            "Upload one or more completed response templates from Step 3. "
+            "Each file represents one respondent. When multiple files are uploaded, "
+            "responses are synthesised by AI before scoring."
+        )
+
+        uploaded_files = st.file_uploader(
+            "📂 Upload Completed Response Sheets (CSV or Excel)",
+            type=["csv", "xlsx"],
+            accept_multiple_files=True,
+            help="Upload the Excel template from Step 3, completed by each respondent.",
+        )
+        # -- Manually input responses--
+        st.subheader("Manually Input Responses based on user feedback")
+        st.markdown(
+            "Expand a capability to see its questions. Answer each question by selecting a score or response."
+            "Alternatively, upload a completed CSV from Step 3 using the **Offline option** above. "
+            "Once you have answered enough questions, click **Submit Assessment** to save."
+        )
+
+        # Progress — manual input only (hidden when respondent sets are uploaded)
         total = len(questions)
-        answered = len(responses)
-        col_prog, col_save = st.columns([4, 1])
-        with col_prog:
-            st.progress(answered / total if total > 0 else 0)
-            st.caption(f"Progress: {answered} / {total} answered")
-        with col_save:
-            if st.button("💾 Save Progress", help="Save responses captured so far — you can resume later from the Assessments page."):
-                if st.session_state.get("assessment_id") and answered > 0:
-                    with st.spinner("Saving…"):
-                        save_assessment(get_client(), st.session_state)
-                    st.success(f"Saved {answered} response(s).")
-                elif answered == 0:
-                    st.warning("No responses to save yet.")
+        answered = sum(
+            1 for r in responses.values()
+            if r.get("score") is not None or r.get("answer") is not None
+        )
+        _has_uploads = bool(st.session_state.get("respondent_sets", []))
+
+        if not _has_uploads:
+            col_prog, col_save = st.columns([4, 1])
+            with col_prog:
+                st.progress(answered / total if total > 0 else 0)
+            with col_save:
+                _save_label = "No responses yet" if answered == 0 else "💾 Save Progress"
+                if st.button(
+                    _save_label,
+                    disabled=(answered == 0),
+                    help="Save responses captured so far — you can resume later from the Assessments page.",
+                ):
+                    if st.session_state.get("assessment_id"):
+                        with st.spinner("Saving…"):
+                            save_assessment(get_client(), st.session_state)
+                        st.success(f"Saved {answered} response(s).")
+            if answered == 0:
+                st.caption("No responses yet — expand a capability below to begin.")
+            else:
+                st.warning(f"{answered} response(s) saved out of {total} expected")
 
         # Group questions by role → domain → capability
         grouped = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -902,10 +1377,10 @@ def render():
         for role in role_order:
             if role not in grouped:
                 continue
-            st.markdown(f"## {role} Capabilities")
+            st.subheader(f"{role} Capabilities")
 
             for domain, caps in sorted(grouped[role].items()):
-                st.markdown(f"### {domain}")
+                st.markdown(f"#### {domain}")
 
                 for cap_name, qs in sorted(caps.items()):
                     with st.expander(f"**{cap_name}** ({qs[0]['subdomain']})", expanded=False):
@@ -997,102 +1472,160 @@ def render():
 
                             st.divider()
 
-        st.session_state.responses = responses
-        # ── Offline workflow ──
-        st.markdown("### Offline option")
-        st.caption("Complete the question CSV downloaded in Step 3 (add score, answer, and notes columns), then upload it here.")
-
-        uploaded = st.file_uploader(
-        "📂 Upload Completed Answers (CSV or Excel)",
-        type=["csv", "xlsx"],
-        help="Upload the completed question sheet from Step 3.",
-        )
         
-        if uploaded is not None:
-            try:
-                filename = uploaded.name.lower()
-                if filename.endswith(".xlsx"):
-                    df_up = pd.read_excel(uploaded)
-                else:
-                    df_up = pd.read_csv(uploaded)
-                required_cols = {"capability_id", "capability_name", "domain",
-                                "subdomain", "capability_role", "question",
-                                "response_type", "guidance"}
-                if not required_cols.issubset(set(df_up.columns)):
-                    st.error("Uploaded file is missing required columns. Please use the Step 3 CSV.")
-                else:
-                    loaded = 0
-                    skipped = 0
-                    for _, row in df_up.iterrows():
-                        rtype = str(row.get("response_type", "")).strip()
-                        score_raw = row.get("score", "")
-                        answer_raw = str(row.get("answer", "")).strip()
-                        notes_raw = str(row.get("notes", "")).strip()
 
+        def _parse_response_file(file) -> tuple[str, str, dict]:
+            """Parse one response file. Returns (respondent_name, respondent_role, responses_dict)."""
+            fname = file.name.lower()
+            if fname.endswith(".xlsx"):
+                df = pd.read_excel(file, header=1)
+            else:
+                df = pd.read_csv(file)
+
+            required_cols = {"capability_id", "capability_name", "domain",
+                             "subdomain", "capability_role", "question",
+                             "response_type"}
+            if not required_cols.issubset(set(df.columns)):
+                raise ValueError(f"Missing required columns. Use the Step 3 response template.")
+
+            # Respondent identity — take first non-empty value in the column (or filename)
+            r_name = ""
+            r_role = ""
+            if "respondent_name" in df.columns:
+                vals = df["respondent_name"].dropna().astype(str)
+                vals = vals[vals.str.strip() != ""]
+                if not vals.empty:
+                    r_name = vals.iloc[0].strip()
+            if not r_name:
+                r_name = file.name.rsplit(".", 1)[0]  # fallback to filename
+
+            if "respondent_role" in df.columns:
+                vals = df["respondent_role"].dropna().astype(str)
+                vals = vals[vals.str.strip() != ""]
+                if not vals.empty:
+                    r_role = vals.iloc[0].strip()
+
+            resp_dict = {}
+            loaded = skipped = 0
+            for _, row in df.iterrows():
+                rtype = str(row.get("response_type", "")).strip()
+                score_raw = row.get("score", "")
+                answer_raw = str(row.get("answer", "")).strip()
+                notes_raw = str(row.get("notes", "")).strip()
+
+                score = None
+                if str(score_raw).strip() not in ("", "nan"):
+                    try:
+                        score = int(float(str(score_raw).strip()))
+                        if score not in (1, 2, 3, 4, 5):
+                            score = None
+                    except ValueError:
                         score = None
-                        if str(score_raw).strip() not in ("", "nan"):
-                            try:
-                                score = int(float(str(score_raw).strip()))
-                                if score not in (1, 2, 3, 4, 5):
-                                    score = None
-                            except ValueError:
-                                score = None
 
-                        answer = answer_raw if answer_raw.lower() in ("yes", "no", "partial") else None
+                answer = answer_raw if answer_raw.lower() in ("yes", "no", "partial") else None
 
-                        if rtype == "maturity_1_5" and score is None:
-                            skipped += 1
-                            continue
-                        if rtype == "yes_no_evidence" and answer is None and score is None:
-                            skipped += 1
-                            continue
-                        if rtype not in ("maturity_1_5", "yes_no_evidence") and not notes_raw and score is None:
-                            skipped += 1
-                            continue
+                if rtype == "maturity_1_5" and score is None:
+                    skipped += 1; continue
+                if rtype == "yes_no_evidence" and answer is None and score is None:
+                    skipped += 1; continue
+                if rtype not in ("maturity_1_5", "yes_no_evidence") and not notes_raw and score is None:
+                    skipped += 1; continue
 
-                        key = str(row["capability_id"]) + "|" + str(row["capability_role"]) + "|" + str(row["question"])
-                        responses[key] = {
-                            "capability_id": row["capability_id"],
-                            "capability_name": str(row["capability_name"]),
-                            "domain": str(row["domain"]),
-                            "subdomain": str(row["subdomain"]),
-                            "capability_role": str(row["capability_role"]),
-                            "question": str(row["question"]),
-                            "response_type": rtype,
-                            "score": score,
-                            "answer": answer,
-                            "notes": notes_raw,
-                        }
-                        loaded += 1
+                key = f"{row['capability_id']}|{row['capability_role']}|{row['question']}"
+                resp_dict[key] = {
+                    "capability_id":   row["capability_id"],
+                    "capability_name": str(row["capability_name"]),
+                    "domain":          str(row["domain"]),
+                    "subdomain":       str(row["subdomain"]),
+                    "capability_role": str(row["capability_role"]),
+                    "question":        str(row["question"]),
+                    "response_type":   rtype,
+                    "score":           score,
+                    "answer":          answer,
+                    "notes":           notes_raw,
+                }
+                loaded += 1
+            return r_name, r_role, resp_dict, loaded, skipped
 
-                    st.session_state.responses = responses
-                    st.success(f"Loaded {loaded} responses. {skipped} skipped (no valid score/answer).")
+        if uploaded_files:
+            new_sets = []
+            parse_errors = []
+            for f in uploaded_files:
+                try:
+                    r_name, r_role, resp_dict, loaded, skipped = _parse_response_file(f)
+                    new_sets.append({"name": r_name, "role": r_role, "responses": resp_dict})
+                    st.success(f"✅ **{r_name}** ({r_role or 'no role'}): {loaded} responses loaded, {skipped} skipped.")
+                except Exception as e:
+                    parse_errors.append(f"❌ {f.name}: {e}")
+            for err in parse_errors:
+                st.error(err)
 
-            except Exception as e:
-                st.error(f"Could not read file: {e}")
+            if new_sets:
+                # Merge into existing respondent sets — same name overwrites, new names append
+                existing = {rs["name"]: rs for rs in st.session_state.respondent_sets}
+                for ns in new_sets:
+                    existing[ns["name"]] = ns
+                st.session_state.respondent_sets = list(existing.values())
+                total_sets = len(st.session_state.respondent_sets)
+                st.info(
+                    f"**{total_sets} respondent(s) loaded total.** "
+                    "Responses will be synthesised by AI when you click Submit Assessment."
+                )
+
+        # Show current respondent set summary
+        if st.session_state.respondent_sets:
+            st.markdown("**Loaded respondent sets:**")
+            for rs in st.session_state.respondent_sets:
+                n_resp = len(rs.get("responses", {}))
+                st.markdown(f"- **{rs['name']}** ({rs.get('role', '—')}) — {n_resp} responses")
+            if st.button("🗑️ Clear uploaded respondents", type="secondary"):
+                st.session_state.respondent_sets = []
+                st.rerun()
         
         st.divider()
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Back to Step 3"):
-                st.session_state.wizard_step = 3
-                st.rerun()
-        with col2:
-            if st.button("Submit Assessment", type="primary"):
-                if answered == 0:
-                    st.error("Please answer at least one question before submitting.")
+        _has_responses = answered > 0 or bool(st.session_state.get("respondent_sets", []))
+        _nav4 = _render_nav_row(
+            {"label": "Back to Step 3",    "key": "s4_back",   "style": "outline-secondary"},
+            {"label": "Submit Assessment", "key": "s4_submit", "style": "primary", "disabled": not _has_responses},
+        )
+        if _nav4["s4_back"]:
+            st.session_state.wizard_step = 3
+            st.rerun()
+        if _nav4["s4_submit"]:
+                _rsets = st.session_state.get("respondent_sets", [])
+                _has_online = answered > 0
+                _has_uploads = len(_rsets) > 0
+                if not _has_online and not _has_uploads:
+                    st.error("Please answer at least one question or upload completed response sheets.")
                 else:
+                    db = get_client()
+                    # ── Multi-respondent synthesis ──
+                    if len(_rsets) > 1:
+                        with st.spinner(f"Synthesising responses from {len(_rsets)} respondents…"):
+                            try:
+                                from src.ai_client import synthesize_respondent_responses
+                                synthesized = synthesize_respondent_responses(
+                                    respondent_sets=_rsets,
+                                    use_case_name=st.session_state.use_case_name,
+                                )
+                                st.session_state.responses = synthesized
+                                # Persist raw respondent data for audit
+                                if st.session_state.get("assessment_id"):
+                                    save_respondent_responses(db, st.session_state.assessment_id, _rsets)
+                                st.success(f"Synthesised {len(synthesized)} responses from {len(_rsets)} respondents.")
+                            except Exception as e:
+                                st.error(f"Synthesis failed: {e}. Falling back to first respondent's answers.")
+                                st.session_state.responses = _rsets[0]["responses"]
                     with st.spinner("Saving assessment..."):
                         try:
-                            db = get_client()
                             assessment_id = save_assessment(db, st.session_state)
                             st.session_state.assessment_id = assessment_id
-                            st.success(f"Saved — assessment ID: {assessment_id}")
                         except Exception as e:
                             st.error(f"Save failed: {e}")
                             import traceback
                             st.code(traceback.format_exc())
                             st.session_state.assessment_id = None
+                    st.session_state.completed_steps.add(4)
                     st.session_state.wizard_step = 5
                     st.rerun()
                     
@@ -1100,7 +1633,8 @@ def render():
     # STEP 5
     # -------------------------
     if st.session_state.wizard_step == 5:
-        st.subheader("Step 5 — Assessment Findings")
+        _render_breadcrumbs()
+        st.title("Step 5 — Assessment Findings")
         st.markdown(
             "Review the assessment results below. Domain and capability scores are shown with gap analysis "
             "against your targets. An AI-generated executive summary highlights key risks and recommendations. "
@@ -1223,7 +1757,7 @@ def render():
                 st.warning(f"Could not save findings: {e}")
 
         # ── Summary cards ──
-        st.markdown(f"### Overall maturity: **{overall} / 5**")
+        st.subheader(f"Overall maturity: **{overall} / 5**")
         st.markdown(f"**Client:** {st.session_state.get('client_name', 'Unknown')}")
         if st.session_state.get("engagement_name"):
             st.markdown(f"**Engagement:** {st.session_state.engagement_name}")
@@ -1235,7 +1769,7 @@ def render():
         st.divider()
 
         # ── Maturity Heatmap ──
-        st.markdown("### Maturity Heatmap")
+        st.subheader("Maturity Heatmap")
         from src.heatmap import render_heatmap_html, generate_heatmap_excel
         heatmap_html = render_heatmap_html(dom_scores.to_dict(orient="records"))
         n_domains    = len(dom_scores)
@@ -1245,37 +1779,37 @@ def render():
         st.divider()
 
         # ── Domain scores ──
-        st.markdown("### Domain scores")
-        st.dataframe(dom_scores, width='stretch')
+        st.subheader("Domain scores")
+        st.dataframe(dom_scores, use_container_width=True)
 
         st.divider()
 
         # ── Capability scores by role ──
-        st.markdown("### Capability scores")
+        st.subheader("Capability scores")
         roles_present = [r for r in ["Core", "Upstream", "Downstream"] if r in cap_scores["capability_role"].values]
         tabs = st.tabs(roles_present)
 
         for tab, role in zip(tabs, roles_present):
             with tab:
                 df_role = cap_scores[cap_scores["capability_role"] == role].sort_values("avg_score")
-                st.dataframe(df_role, width='stretch')
+                st.dataframe(df_role, use_container_width=True)
 
         st.divider()
 
         # ── High risk capabilities ──
         high_risk = cap_scores[cap_scores["avg_score"] < 2].sort_values("avg_score")
         if not high_risk.empty:
-            st.markdown("### 🔴 High-risk capabilities")
+            st.subheader("🔴 High-risk capabilities")
             st.dataframe(
                 high_risk[["capability_name", "domain", "capability_role", "avg_score", "gap"]],
-                width='stretch',
+                use_container_width=True,
             )
         else:
             st.success("No capabilities scored below 2.")
 
         # ── Executive summary ──
         st.divider()
-        st.markdown("### Executive summary")
+        st.subheader("Executive summary")
 
         top_gaps = cap_scores[cap_scores["gap"] > 0].sort_values("gap", ascending=False).head(5)
 
@@ -1313,112 +1847,100 @@ def render():
         if st.session_state.get("findings_narrative"):
             st.markdown(st.session_state.findings_narrative)
             if not st.session_state.get("confirm_regen_narrative"):
-                if st.button("Regenerate Summary"):
+                _regen_narr = _render_nav_row(
+                    {"label": "Regenerate Summary", "key": "s5_regen_narr", "style": "outline-secondary"},
+                )
+                if _regen_narr["s5_regen_narr"]:
                     st.session_state.confirm_regen_narrative = True
                     st.rerun()
             else:
                 st.warning("⚠️ This will replace the saved executive summary. Are you sure?")
-                col_yn1, col_yn2, _ = st.columns([1, 1, 5])
-                with col_yn1:
-                    if st.button("Yes, regenerate", type="primary", key="confirm_regen_narr_yes"):
-                        # Clear session only — DB will be overwritten once new narrative is saved
-                        st.session_state.findings_narrative = None
-                        st.session_state.confirm_regen_narrative = False
-                        st.rerun()
-                with col_yn2:
-                    if st.button("Cancel", key="confirm_regen_narr_cancel"):
-                        st.session_state.confirm_regen_narrative = False
-                        st.rerun()
+                _confirm_narr = _render_nav_row(
+                    {"label": "Yes, regenerate", "key": "s5_narr_yes",    "style": "primary"},
+                    {"label": "Cancel",          "key": "s5_narr_cancel", "style": "outline-secondary"},
+                )
+                if _confirm_narr["s5_narr_yes"]:
+                    st.session_state.findings_narrative = None
+                    st.session_state.confirm_regen_narrative = False
+                    st.rerun()
+                if _confirm_narr["s5_narr_cancel"]:
+                    st.session_state.confirm_regen_narrative = False
+                    st.rerun()
 
         st.divider()
 
         # ── Exports ──
-        st.markdown("### Export")
-        col_a, col_b, col_c, col_d = st.columns(4)
-
-        with col_a:
-            st.download_button(
-                "Download Capability Scores (CSV)",
-                data=cap_scores.to_csv(index=False).encode("utf-8"),
-                file_name=f"{st.session_state.use_case_name}_capability_scores.csv".replace(" ", "_"),
-                mime="text/csv",
-            )
-        with col_b:
-            st.download_button(
-                "Download Domain Scores (CSV)",
-                data=dom_scores.to_csv(index=False).encode("utf-8"),
-                file_name=f"{st.session_state.use_case_name}_domain_scores.csv".replace(" ", "_"),
-                mime="text/csv",
-            )
-        with col_c:
-            st.download_button(
-                "Download All Responses (CSV)",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"{st.session_state.use_case_name}_responses.csv".replace(" ", "_"),
-                mime="text/csv",
-            )
-        with col_d:
-            excel_bytes = generate_heatmap_excel(
-                dom_scores.to_dict(orient="records"),
-                client_name=st.session_state.get("client_name", ""),
-                engagement_name=st.session_state.get("engagement_name", ""),
-                use_case_name=st.session_state.use_case_name,
-            )
-            _client_slug = st.session_state.get("client_name", "Client").replace(" ", "_")
-            st.download_button(
-                "Download Heatmap (Excel)",
-                data=excel_bytes,
-                file_name=f"Meridant_Insight_{_client_slug}_Heatmap.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+        st.subheader("Export")
+        _uc_slug     = st.session_state.use_case_name.replace(" ", "_")
+        _client_slug = st.session_state.get("client_name", "Client").replace(" ", "_")
+        _heatmap_bytes = generate_heatmap_excel(
+            dom_scores.to_dict(orient="records"),
+            client_name=st.session_state.get("client_name", ""),
+            engagement_name=st.session_state.get("engagement_name", ""),
+            use_case_name=st.session_state.use_case_name,
+        )
+        _export_btn_row(
+            {"label": "Capability Scores (CSV)", "data": cap_scores.to_csv(index=False).encode("utf-8"), "filename": f"{_uc_slug}_capability_scores.csv", "mime": "text/csv"},
+            {"label": "Domain Scores (CSV)",     "data": dom_scores.to_csv(index=False).encode("utf-8"), "filename": f"{_uc_slug}_domain_scores.csv",     "mime": "text/csv"},
+            {"label": "All Responses (CSV)",     "data": df.to_csv(index=False).encode("utf-8"),         "filename": f"{_uc_slug}_responses.csv",           "mime": "text/csv"},
+            {"label": "Heatmap (Excel)",          "data": _heatmap_bytes,                                 "filename": f"Meridant_Insight_{_client_slug}_Heatmap.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        )
 
         st.divider()
 
         # ── Navigation ──
-        col_nav_a, col_nav_b, col_nav_c = st.columns([1, 1, 1])
-        with col_nav_a:
-            if st.button("Start New Assessment"):
-                for k in ["use_case_name", "intent_text", "client_name", "engagement_name",
-                          "client_industry", "client_sector", "client_country",
-                          "core_caps", "upstream_caps", "downstream_caps", "domains_covered",
-                          "questions", "responses", "findings_narrative", "domain_targets",
-                          "assessment_id", "findings_saved",
-                          "assessment_mode", "selected_usecase_id",
-                          "roadmap_data", "responses_ai_scored", "recommendations",
-                          "confirm_regen_narrative", "confirm_regen_recs"]:
-                    if k in ["use_case_name", "intent_text", "client_name", "engagement_name",
-                             "client_industry", "client_sector", "client_country"]:
-                        st.session_state[k] = ""
-                    elif k == "responses":
-                        st.session_state[k] = {}
-                    elif k in ("findings_narrative", "assessment_id", "roadmap_data",
-                               "recommendations"):
-                        st.session_state[k] = None
-                    elif k in ("findings_saved", "responses_ai_scored",
-                               "confirm_regen_narrative", "confirm_regen_recs"):
-                        st.session_state[k] = False
-                    elif k == "assessment_mode":
-                        st.session_state[k] = "predefined"
-                    elif k in ("selected_usecase_id",):
-                        st.session_state[k] = None
-                    else:
-                        st.session_state[k] = []
-                st.session_state.wizard_step = 1
-                st.rerun()
-        with col_nav_b:
-            if st.button("Generate Recommendations →", type="primary"):
-                st.session_state.wizard_step = "5b"
-                st.rerun()
-        with col_nav_c:
-            if st.button("Skip to Roadmap →"):
-                st.session_state.wizard_step = 6
-                st.rerun()
+        _has_recs = bool(st.session_state.get("recommendations"))
+        _nav5 = _render_nav_row(
+            {"label": "Start New Assessment",                                    "key": "s5_new",  "style": "outline-secondary"},
+            {"label": "View Recommendations →" if _has_recs else "Generate Recommendations →", "key": "s5_recs", "style": "primary"},
+            {"label": "Skip to Roadmap →",                                       "key": "s5_skip", "style": "outline-secondary"},
+        )
+        if _nav5["s5_new"]:
+            for k in ["use_case_name", "intent_text", "client_name", "engagement_name",
+                      "client_industry", "client_sector", "client_country",
+                      "core_caps", "upstream_caps", "downstream_caps", "domains_covered",
+                      "questions", "responses", "findings_narrative", "domain_targets",
+                      "assessment_id", "findings_saved",
+                      "assessment_mode", "selected_usecase_id",
+                      "roadmap_data", "responses_ai_scored", "recommendations",
+                      "confirm_regen_narrative", "confirm_regen_recs", "confirm_regen_questions",
+                      "confirm_rediscover", "show_questions_table"]:
+                if k in ["use_case_name", "intent_text", "client_name", "engagement_name",
+                         "client_industry", "client_sector", "client_country"]:
+                    st.session_state[k] = ""
+                elif k == "responses":
+                    st.session_state[k] = {}
+                elif k in ("findings_narrative", "assessment_id", "roadmap_data", "recommendations"):
+                    st.session_state[k] = None
+                elif k in ("findings_saved", "responses_ai_scored",
+                           "confirm_regen_narrative", "confirm_regen_recs", "confirm_regen_questions",
+                           "confirm_rediscover", "show_questions_table"):
+                    st.session_state[k] = False
+                elif k == "assessment_mode":
+                    st.session_state[k] = "predefined"
+                elif k in ("selected_usecase_id",):
+                    st.session_state[k] = None
+                else:
+                    st.session_state[k] = []
+            st.session_state.completed_steps = set()
+            st.session_state.respondent_sets = []
+            st.session_state.wizard_step = 1
+            st.rerun()
+        if _nav5["s5_recs"]:
+            st.session_state.completed_steps.add(5)
+            st.session_state.wizard_step = "5b"
+            st.rerun()
+        if _nav5["s5_skip"]:
+            st.session_state.completed_steps.add(5)
+            st.session_state.wizard_step = 6
+            st.rerun()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 5b — Gap Recommendations
+    # STEP 6 — Gap Recommendations
     # ─────────────────────────────────────────────────────────────────────────
     if st.session_state.wizard_step == "5b":
-        st.subheader("Step 5b — Gap Recommendations")
+        _render_breadcrumbs()
+        st.title("Step 6 — Gap Recommendations")
         st.caption(
             "AI-generated per-capability recommendations grounded in MMTF maturity "
             "descriptors, actual assessment responses, and dependency context."
@@ -1472,7 +1994,7 @@ def render():
         gap_count = len(gap_caps_5b)
 
         with st.container(border=True):
-            st.markdown("#### Recommendation settings")
+            st.subheader("Recommendation settings")
 
             col_s1, col_s2 = st.columns(2)
             with col_s1:
@@ -1528,33 +2050,34 @@ def render():
                 f"{max_caps} will be analysed."
             )
 
-            col_r1, col_r2 = st.columns([3, 1])
-            with col_r2:
-                if not recs:
-                    # First run — no confirmation needed
-                    run_btn = st.button("Generate Recommendations", type="primary", disabled=(max_caps == 0))
-                elif not st.session_state.get("confirm_regen_recs"):
-                    # Existing recs — ask for confirmation first
-                    run_btn = False
-                    if st.button("Regenerate", type="primary", disabled=(max_caps == 0)):
-                        st.session_state.confirm_regen_recs = True
-                        st.rerun()
-                else:
-                    # Waiting for user to confirm in the dialog below
-                    run_btn = False
+            run_btn = False
+            if not recs:
+                _gen_row = _render_nav_row(
+                    {"label": "Generate Recommendations", "key": "s5b_gen", "style": "primary", "disabled": (max_caps == 0)},
+                )
+                if _gen_row["s5b_gen"]:
+                    run_btn = True
+            elif not st.session_state.get("confirm_regen_recs"):
+                _regen_row = _render_nav_row(
+                    {"label": "Regenerate", "key": "s5b_regen", "style": "outline-secondary", "disabled": (max_caps == 0)},
+                )
+                if _regen_row["s5b_regen"]:
+                    st.session_state.confirm_regen_recs = True
+                    st.rerun()
 
         # Confirm-before-overwrite dialog (rendered outside the settings container)
         if recs and st.session_state.get("confirm_regen_recs"):
             st.warning("⚠️ This will overwrite the saved recommendations for this assessment. Are you sure?")
-            col_yn1, col_yn2, _ = st.columns([1, 1, 5])
-            with col_yn1:
-                if st.button("Yes, overwrite", type="primary", key="confirm_overwrite_recs"):
-                    st.session_state.confirm_regen_recs = False
-                    run_btn = True
-            with col_yn2:
-                if st.button("Cancel", key="cancel_overwrite_recs"):
-                    st.session_state.confirm_regen_recs = False
-                    st.rerun()
+            _confirm_recs = _render_nav_row(
+                {"label": "Yes, overwrite", "key": "s5b_overwrite_yes",    "style": "primary"},
+                {"label": "Cancel",         "key": "s5b_overwrite_cancel", "style": "outline-secondary"},
+            )
+            if _confirm_recs["s5b_overwrite_yes"]:
+                st.session_state.confirm_regen_recs = False
+                run_btn = True
+            if _confirm_recs["s5b_overwrite_cancel"]:
+                st.session_state.confirm_regen_recs = False
+                st.rerun()
 
         if run_btn:
             st.session_state.recommendations = None
@@ -1583,6 +2106,7 @@ def render():
                     client_country=st.session_state.get("client_country", ""),
                 )
                 st.session_state.recommendations = recs
+                st.session_state.completed_steps.add("5b")
                 if assessment_id:
                     save_recommendations(db, assessment_id, recs)
             except Exception as _e:
@@ -1642,49 +2166,42 @@ def render():
 
             # Export
             st.divider()
-            st.markdown("### Export")
-            col_e1, col_e2 = st.columns(2)
-            with col_e1:
-                import csv, io as _io
-                _csv_buf = _io.StringIO()
-                _fields = [
-                    "capability_name", "domain", "capability_role", "current_score",
-                    "target_maturity", "gap", "priority_tier", "effort_estimate",
-                    "narrative",
-                ]
-                _writer = csv.DictWriter(_csv_buf, fieldnames=_fields, extrasaction="ignore")
-                _writer.writeheader()
-                _writer.writerows(recs)
-                st.download_button(
-                    "Download CSV",
-                    data=_csv_buf.getvalue(),
-                    file_name=f"{st.session_state.use_case_name}_recommendations.csv".replace(" ", "_"),
-                    mime="text/csv",
-                )
-            with col_e2:
-                st.download_button(
-                    "Download JSON",
-                    data=_json.dumps(recs, indent=2),
-                    file_name=f"{st.session_state.use_case_name}_recommendations.json".replace(" ", "_"),
-                    mime="application/json",
-                )
+            st.subheader("Export")
+            import csv, io as _io
+            _csv_buf = _io.StringIO()
+            _fields = [
+                "capability_name", "domain", "capability_role", "current_score",
+                "target_maturity", "gap", "priority_tier", "effort_estimate",
+                "narrative",
+            ]
+            _writer = csv.DictWriter(_csv_buf, fieldnames=_fields, extrasaction="ignore")
+            _writer.writeheader()
+            _writer.writerows(recs)
+            _uc_slug = st.session_state.use_case_name.replace(" ", "_")
+            _export_btn_row(
+                {"label": "Recommendations (CSV)",  "data": _csv_buf.getvalue(),        "filename": f"{_uc_slug}_recommendations.csv",  "mime": "text/csv"},
+                {"label": "Recommendations (JSON)", "data": _json.dumps(recs, indent=2), "filename": f"{_uc_slug}_recommendations.json", "mime": "application/json"},
+            )
 
         # ── Navigation ────────────────────────────────────────────────────────
         st.divider()
-        col_5b_a, col_5b_b = st.columns([1, 1])
-        with col_5b_a:
-            if st.button("← Back to Findings"):
-                st.session_state.wizard_step = 5
-                st.rerun()
-        with col_5b_b:
-            if st.button("Continue to Roadmap →", type="primary"):
-                st.session_state.wizard_step = 6
-                st.rerun()
+        _nav5b = _render_nav_row(
+            {"label": "← Back to Findings",   "key": "s5b_back", "style": "outline-secondary"},
+            {"label": "Continue to Roadmap →", "key": "s5b_cont", "style": "primary"},
+        )
+        if _nav5b["s5b_back"]:
+            st.session_state.wizard_step = 5
+            st.rerun()
+        if _nav5b["s5b_cont"]:
+            st.session_state.completed_steps.add("5b")
+            st.session_state.wizard_step = 6
+            st.rerun()
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 6 — Transformation Roadmap
     # ─────────────────────────────────────────────────────────────────────────
     if st.session_state.wizard_step == 6:
+        _render_breadcrumbs()
         st.subheader("Step 6 — Transformation Roadmap")
         st.caption("AI-generated gap-closure roadmap prioritised by maturity gaps and business intent.")
 
@@ -1859,11 +2376,8 @@ def render():
                     use_case_name=st.session_state.use_case_name,
                 )
                 _client_slug = st.session_state.get("client_name", "Client").replace(" ", "_")
-                st.download_button(
-                    "Download Roadmap (Excel)",
-                    data=excel_bytes,
-                    file_name=f"Meridant_Insight_{_client_slug}_Roadmap.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                _export_btn_row(
+                    {"label": "Roadmap (Excel)", "data": excel_bytes, "filename": f"Meridant_Insight_{_client_slug}_Roadmap.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
                 )
 
                 # ── Progress Tracker ─────────────────────────────────────

@@ -8,6 +8,7 @@ _narrative_column_ensured = False
 _consultant_column_ensured = False
 _framework_id_column_ensured = False
 _roadmap_progress_table_ensured = False
+_respondent_columns_ensured = False
 
 
 def _ensure_narrative_column(client: MeridantClient) -> None:
@@ -38,6 +39,25 @@ def _ensure_consultant_column(client: MeridantClient) -> None:
     except Exception:
         pass  # Column already exists
     _consultant_column_ensured = True
+
+
+def _ensure_respondent_columns(client: MeridantClient) -> None:
+    """
+    Add respondent_name and respondent_role columns to AssessmentResponse if missing.
+    Memoized — only runs the ALTER TABLEs once per process.
+    """
+    global _respondent_columns_ensured
+    if _respondent_columns_ensured:
+        return
+    try:
+        client.write("ALTER TABLE AssessmentResponse ADD COLUMN respondent_name TEXT", [])
+    except Exception:
+        pass
+    try:
+        client.write("ALTER TABLE AssessmentResponse ADD COLUMN respondent_role TEXT", [])
+    except Exception:
+        pass
+    _respondent_columns_ensured = True
 
 
 def _ensure_framework_id_column(client: MeridantClient) -> None:
@@ -75,7 +95,20 @@ def _get_or_create_client(client: MeridantClient, session: dict) -> int:
         [client_name],
     )
     if existing["rows"]:
-        return existing["rows"][0]["id"]
+        client_id = existing["rows"][0]["id"]
+        client.write(
+            """
+            UPDATE Client SET industry = ?, sector = ?, country = ?
+            WHERE id = ?
+            """,
+            [
+                session.get("client_industry", ""),
+                session.get("client_sector", ""),
+                session.get("client_country", ""),
+                client_id,
+            ],
+        )
+        return client_id
     result = client.write(
         """
         INSERT INTO Client (client_name, industry, sector, country, created_at)
@@ -126,8 +159,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 _RESP_INSERT_SQL = """
 INSERT INTO AssessmentResponse
     (assessment_id, capability_id, capability_name, domain, subdomain,
-     capability_role, question, response_type, score, answer, notes)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     capability_role, question, response_type, score, answer, notes,
+     respondent_name, respondent_role)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -212,8 +246,10 @@ def save_questions(
     Called after Step 3 question generation so the question set survives session expiry.
     Idempotent: clears existing response rows before inserting.
     """
+    _ensure_respondent_columns(client)
+    # Only delete canonical (non-respondent) rows so raw multi-respondent data is preserved
     client.write(
-        "DELETE FROM AssessmentResponse WHERE assessment_id = ?",
+        "DELETE FROM AssessmentResponse WHERE assessment_id = ? AND (respondent_name IS NULL OR respondent_name = '')",
         [assessment_id],
     )
     if not questions:
@@ -231,6 +267,8 @@ def save_questions(
             None,   # score — filled at Step 4
             None,   # answer — filled at Step 4
             "",     # notes — filled at Step 4
+            None,   # respondent_name
+            None,   # respondent_role
         )
         for q in questions
     ]
@@ -250,9 +288,10 @@ def save_assessment(client: MeridantClient, session: dict) -> int:
     existing_id = session.get("assessment_id")
 
     if existing_id:
-        # ── Fast path: assessment already exists — update responses only ──
+        # ── Fast path: assessment already exists — update canonical responses only ──
+        _ensure_respondent_columns(client)
         client.write(
-            "DELETE FROM AssessmentResponse WHERE assessment_id = ?",
+            "DELETE FROM AssessmentResponse WHERE assessment_id = ? AND (respondent_name IS NULL OR respondent_name = '')",
             [existing_id],
         )
         responses = session.get("responses", {})
@@ -270,6 +309,8 @@ def save_assessment(client: MeridantClient, session: dict) -> int:
                     r.get("score"),
                     r.get("answer"),
                     r.get("notes", ""),
+                    None,   # respondent_name — canonical row
+                    None,   # respondent_role
                 )
                 for r in responses.values()
             ]
@@ -321,6 +362,8 @@ def save_assessment(client: MeridantClient, session: dict) -> int:
                 r.get("score"),
                 r.get("answer"),
                 r.get("notes", ""),
+                None,   # respondent_name — canonical row
+                None,   # respondent_role
             )
             for r in responses.values()
         ]
@@ -677,7 +720,9 @@ def load_assessment(client: MeridantClient, assessment_id: int):
         [int(assessment_id)]
     )
     resp_res = client.query(
-        "SELECT * FROM AssessmentResponse WHERE assessment_id = ? ORDER BY capability_id",
+        """SELECT * FROM AssessmentResponse
+           WHERE assessment_id = ? AND (respondent_name IS NULL OR respondent_name = '')
+           ORDER BY capability_id""",
         [int(assessment_id)]
     )
     return {
@@ -685,3 +730,105 @@ def load_assessment(client: MeridantClient, assessment_id: int):
         "capabilities": caps_res.get("rows", []),
         "responses":    resp_res.get("rows", []),
     }
+
+
+def load_respondent_sets(client: MeridantClient, assessment_id: int) -> list[dict]:
+    """
+    Reconstruct respondent_sets from raw respondent rows persisted in AssessmentResponse.
+    Returns list of {"name": str, "role": str, "responses": dict} — one entry per respondent.
+    """
+    _ensure_respondent_columns(client)
+    rows = client.query(
+        """SELECT * FROM AssessmentResponse
+           WHERE assessment_id = ? AND respondent_name IS NOT NULL AND respondent_name != ''
+           ORDER BY respondent_name""",
+        [int(assessment_id)],
+    ).get("rows", [])
+
+    sets: dict[str, dict] = {}
+    for r in rows:
+        r_name = r["respondent_name"]
+        if r_name not in sets:
+            sets[r_name] = {"name": r_name, "role": r.get("respondent_role") or "", "responses": {}}
+        key = f"{r['capability_id']}|{r['capability_role']}|{r['question']}"
+        sets[r_name]["responses"][key] = {
+            "capability_id":   r["capability_id"],
+            "capability_name": r["capability_name"],
+            "domain":          r["domain"],
+            "subdomain":       r["subdomain"],
+            "capability_role": r["capability_role"],
+            "question":        r["question"],
+            "response_type":   r["response_type"],
+            "score":           r.get("score"),
+            "answer":          r.get("answer"),
+            "notes":           r.get("notes") or "",
+        }
+    return list(sets.values())
+
+
+def save_respondent_responses(
+    client: MeridantClient,
+    assessment_id: int,
+    respondent_sets: list[dict],
+) -> None:
+    """
+    Store raw per-respondent responses for audit purposes.
+    Each set: {"name": str, "role": str, "responses": {key: response_dict}}.
+    Existing raw respondent rows for this assessment are replaced.
+    """
+    _ensure_respondent_columns(client)
+    client.write(
+        "DELETE FROM AssessmentResponse WHERE assessment_id = ? AND respondent_name IS NOT NULL AND respondent_name != ''",
+        [assessment_id],
+    )
+    rows = []
+    for rs in respondent_sets:
+        r_name = rs.get("name", "") or ""
+        r_role = rs.get("role", "") or ""
+        for r in rs.get("responses", {}).values():
+            rows.append((
+                assessment_id,
+                int(r["capability_id"]),
+                r["capability_name"],
+                r["domain"],
+                r["subdomain"],
+                r["capability_role"],
+                r["question"],
+                r["response_type"],
+                r.get("score"),
+                r.get("answer"),
+                r.get("notes", ""),
+                r_name,
+                r_role,
+            ))
+    if rows:
+        client.write_many(_RESP_INSERT_SQL, rows)
+
+
+def reset_assessment_data(client: MeridantClient, assessment_id: int) -> None:
+    """
+    Wipe all downstream data for an assessment so capability discovery can be re-run.
+    Deletes: all AssessmentResponse rows (canonical + respondent), AssessmentCapability,
+    AssessmentFinding, AssessmentRecommendation.
+    Resets Assessment header: overall_score=NULL, status='in_progress',
+    completed_at=NULL, findings_narrative=NULL.
+    The Assessment row itself is preserved so the assessment_id remains valid.
+    """
+    aid = int(assessment_id)
+    # All responses — both canonical and raw respondent rows
+    client.write("DELETE FROM AssessmentResponse WHERE assessment_id = ?", [aid])
+    client.write("DELETE FROM AssessmentCapability WHERE assessment_id = ?", [aid])
+    client.write("DELETE FROM AssessmentFinding WHERE assessment_id = ?", [aid])
+    try:
+        client.write("DELETE FROM AssessmentRecommendation WHERE assessment_id = ?", [aid])
+    except Exception:
+        pass  # Table may not exist yet
+    # Reset header fields
+    _ensure_narrative_column(client)
+    client.write(
+        """UPDATE Assessment
+           SET overall_score = NULL, status = 'in_progress',
+               completed_at = NULL, findings_narrative = NULL
+           WHERE id = ?""",
+        [aid],
+    )

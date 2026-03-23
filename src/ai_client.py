@@ -611,3 +611,145 @@ Constraints:
     raw = raw.strip()
 
     return json.loads(raw)
+
+
+def synthesize_respondent_responses(
+    respondent_sets: list[dict],
+    use_case_name: str,
+) -> dict:
+    """
+    Synthesize multiple respondent response sets into a single normalized response dict.
+
+    Each respondent_set: {"name": str, "role": str, "responses": {key: response_dict}}
+
+    Returns a responses dict in the same format as st.session_state.responses,
+    with synthesized score/answer/notes per question.
+    If only one set is provided, returns it directly without an AI call.
+    """
+    from collections import defaultdict
+
+    if not respondent_sets:
+        return {}
+    if len(respondent_sets) == 1:
+        return respondent_sets[0]["responses"]
+
+    client = get_ai_client()
+
+    # ── Build question map and multi-respondent answer map ──
+    question_map: dict = {}
+    multi_answers: dict = defaultdict(list)
+
+    for rs in respondent_sets:
+        r_label = rs.get("name", "Unknown")
+        r_role  = rs.get("role", "")
+        label   = f"{r_label} ({r_role})" if r_role else r_label
+        for r in rs.get("responses", {}).values():
+            q_key = f"{r['capability_id']}|{r['question']}"
+            if q_key not in question_map:
+                question_map[q_key] = r.copy()
+            multi_answers[q_key].append({
+                "respondent": label,
+                "score":      r.get("score"),
+                "answer":     r.get("answer"),
+                "notes":      r.get("notes", ""),
+            })
+
+    # ── Group questions by capability for batched API calls ──
+    cap_questions: dict = defaultdict(list)
+    for q_key in question_map:
+        cap_id_str = q_key.split("|", 1)[0]
+        cap_questions[cap_id_str].append(q_key)
+
+    synthesized: dict = {}
+    batch_size  = 10
+    cap_ids     = list(cap_questions.keys())
+
+    for batch_start in range(0, len(cap_ids), batch_size):
+        batch_caps = cap_ids[batch_start:batch_start + batch_size]
+
+        lines = []
+        for cap_id_str in batch_caps:
+            q_keys = cap_questions[cap_id_str]
+            base   = question_map[q_keys[0]]
+            lines.append(f"\nCAPABILITY: {base['capability_name']} | {base['domain']}")
+            for q_key in q_keys:
+                r = question_map[q_key]
+                lines.append(f"  Q (cap_id={r['capability_id']}, type={r['response_type']}): {r['question']}")
+                for ans in multi_answers[q_key]:
+                    score_part  = f"score={ans['score']}" if ans["score"] is not None else ""
+                    answer_part = f"answer={ans['answer']}" if ans["answer"] else ""
+                    notes_part  = f"notes: {ans['notes']}" if ans["notes"] else ""
+                    detail = " | ".join(p for p in [score_part, answer_part, notes_part] if p)
+                    lines.append(f"    • {ans['respondent']}: {detail if detail else '(no response)'}")
+
+        prompt = f"""You are synthesising multi-stakeholder capability maturity assessment responses.
+
+Use case: {use_case_name}
+
+For each question you will see responses from {len(respondent_sets)} stakeholders.
+Synthesise each into a single score (1–5) that best represents the collective evidence.
+Apply a conservative bias: if scores diverge significantly, lean toward the lower score
+unless strong evidence in the notes justifies a higher one.
+
+{chr(10).join(lines)}
+
+Return ONLY a JSON array with no preamble, no markdown, no explanation:
+[
+  {{
+    "capability_id": <int>,
+    "question": "<exact question text>",
+    "synthesized_score": <int 1-5>,
+    "synthesized_answer": "<Yes|No|Partial|null>",
+    "synthesis_rationale": "<1-2 sentences explaining basis and any divergence>"
+  }},
+  ...
+]"""
+
+        resp = _call_with_retry(
+            client,
+            model=DEFAULT_MODEL,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+
+        try:
+            batch_results = json.loads(raw)
+        except json.JSONDecodeError:
+            batch_results = []
+
+        result_lookup: dict = {}
+        for item in batch_results:
+            lk = f"{item['capability_id']}|{item['question']}"
+            result_lookup[lk] = item
+
+        cap_counter: dict = {}
+        for cap_id_str in batch_caps:
+            for q_key in cap_questions[cap_id_str]:
+                base = question_map[q_key].copy()
+                if q_key in result_lookup:
+                    item = result_lookup[q_key]
+                    base["score"] = item.get("synthesized_score")
+                    ans = item.get("synthesized_answer", "") or ""
+                    base["answer"] = ans if ans.lower() not in ("", "null") else None
+                    base["notes"]  = item.get("synthesis_rationale", "")
+                else:
+                    scores = [a["score"] for a in multi_answers[q_key] if a["score"] is not None]
+                    base["score"]  = round(sum(scores) / len(scores)) if scores else None
+                    base["answer"] = None
+                    base["notes"]  = "(synthesis fallback — averaged scores)"
+
+                base.pop("respondent_name", None)
+                base.pop("respondent_role", None)
+
+                cap_id_int = base["capability_id"]
+                c = cap_counter.get(cap_id_int, 0)
+                cap_counter[cap_id_int] = c + 1
+                synthesized[f"{cap_id_int}|{base['question']}|{c}"] = base
+
+    return synthesized

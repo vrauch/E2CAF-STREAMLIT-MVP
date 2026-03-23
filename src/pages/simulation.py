@@ -111,7 +111,7 @@ def render():
     try:
         out = client.query(sql.q_scenario_impacts_cluster(scenario_id))
         df_out = pd.DataFrame(out.get("rows", []))
-        st.dataframe(df_out, width='stretch')
+        st.dataframe(df_out, use_container_width=True)
         _download(df_out, f"scenario_{scenario_id}_cluster_impacts.csv", "Download cluster impacts (CSV)")
     except Exception:
         st.info("No cluster impacts yet (run simulation).")
@@ -120,7 +120,7 @@ def render():
     try:
         out2 = client.query(sql.q_scenario_impacts_capability(scenario_id, limit=200))
         df_out2 = pd.DataFrame(out2.get("rows", []))
-        st.dataframe(df_out2, width='stretch')
+        st.dataframe(df_out2, use_container_width=True)
         _download(df_out2, f"scenario_{scenario_id}_capability_impacts.csv", "Download capability impacts (CSV)")
     except Exception:
         st.info("No capability impacts yet (run simulation).")

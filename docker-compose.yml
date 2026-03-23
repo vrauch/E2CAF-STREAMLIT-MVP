@@ -8,4 +8,5 @@ services:
     volumes:
       - ./data:/app/data
       - ./auth_config.yaml:/app/auth_config.yaml
+      - ./.streamlit:/app/.streamlit
     restart: unless-stopped

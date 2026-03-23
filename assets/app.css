@@ -33,6 +33,17 @@ body,
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
 }
 
+/* 2b. MATERIAL SYMBOLS EXCEPTION — restore icon font overridden by Section 2 span rule.
+   Streamlit ≥1.45 uses Material Symbols Rounded ligatures for UI icons (expander arrows, etc).
+   These live in spans with class "material-symbols-rounded" or data-testid containing "Icon".
+   Specificity 0,2,1 beats the 0,1,1 rule above. */
+[data-testid="stAppViewContainer"] span.material-symbols-rounded,
+[data-testid="stAppViewContainer"] span[data-testid*="Icon"],
+[data-testid="stAppViewContainer"] [data-testid="stExpanderToggleIcon"] span,
+[data-testid="stAppViewContainer"] [data-testid="stExpanderToggleIcon"] {
+  font-family: 'Material Symbols Rounded' !important;
+}
+
 /* 3. HEADING SCALE - sizes */
 [data-testid="stAppViewContainer"] h1,
 [data-testid="stAppViewContainer"] h1 *,
@@ -99,7 +110,7 @@ body,
   text-transform: uppercase !important;
   color: #6B7280 !important;
   line-height: 1.3 !important;
-  margin-bottom: .35rem !important;
+  margin-bottom: .25rem !important;
 }
 
 /* 4. MONO - code, pre, data values */
@@ -141,7 +152,7 @@ body,
 [data-testid="stMultiSelect"] *,
 [data-baseweb="select"] * {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
-  font-size: 1.05rem !important;
+  font-size: 1rem !important;
 }
 
 [data-baseweb="popover"] *,
@@ -213,25 +224,63 @@ body,
 }
 
 /* 6. BUTTONS */
-.stButton>button,
-button[data-testid^="baseButton-"],
-[data-testid="stAppViewContainer"] button[data-testid^="baseButton-"] {
+
+/* Container: no stretch, no extra margin */
+[data-testid="stButton"],
+[data-testid="stDownloadButton"],
+[data-testid="stFormSubmitButton"] {
+  width: fit-content !important;
+  margin-bottom: 0 !important;
+  padding: 0 !important;
+}
+
+/* The actual button element — match Bootstrap btn-sm exactly */
+[data-testid="stButton"]>button,
+[data-testid="stDownloadButton"]>button,
+button[data-testid^="baseButton-"] {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
-  font-size: 1rem !important;
+  font-size: .875rem !important;
   font-weight: 400 !important;
   line-height: 1.5 !important;
-  padding: .25rem .6rem !important;
+  padding: .25rem .5rem !important;
   border-radius: .2rem !important;
   min-height: unset !important;
   height: auto !important;
+  width: auto !important;
+  margin: 0 !important;
 }
 
-.stButton>button *,
-button[data-testid^="baseButton-"] *,
-[data-testid="stAppViewContainer"] button[data-testid^="baseButton-"] * {
+/* BaseWeb inner wrapper — scoped strictly to Streamlit button elements */
+[data-testid="stButton"]>button[data-testid^="baseButton-"]>div,
+[data-testid="stDownloadButton"]>button[data-testid^="baseButton-"]>div {
+  padding: 0 !important;
+  min-height: unset !important;
+  height: auto !important;
+  line-height: 1.5 !important;
+  font-size: .875rem !important;
+}
+
+/* Text inside buttons */
+[data-testid="stButton"]>button *,
+[data-testid="stDownloadButton"]>button *,
+button[data-testid^="baseButton-"] * {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
-  font-size: 1rem !important;
+  font-size: .875rem !important;
   font-weight: 400 !important;
+  line-height: 1.5 !important;
+}
+
+/* 6b. HIDDEN STREAMLIT TRIGGER BUTTONS (Bootstrap HTML bridge) */
+[class*="st-key-_nav_btn_"],
+[class*="st-key-_step3_btn_"],
+[class*="st-key-_bc_btn_"] {
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* 7. STRUCTURAL */
@@ -260,29 +309,39 @@ button[data-testid^="baseButton-"] *,
   padding-right: 15px !important;
   padding-left: 15px !important;
   padding-top: 4.75rem !important;
-  padding-bottom: .5rem !important;
+  padding-bottom: 2rem !important;
   margin-right: auto !important;
   margin-left: auto !important;
 }
 
 @media (min-width: 576px) {
-  [data-testid="stMainBlockContainer"] { max-width: 540px !important; }
+  [data-testid="stMainBlockContainer"] {
+    max-width: 540px !important;
+  }
 }
 
 @media (min-width: 768px) {
-  [data-testid="stMainBlockContainer"] { max-width: 720px !important; }
+  [data-testid="stMainBlockContainer"] {
+    max-width: 720px !important;
+  }
 }
 
 @media (min-width: 992px) {
-  [data-testid="stMainBlockContainer"] { max-width: 960px !important; }
+  [data-testid="stMainBlockContainer"] {
+    max-width: 960px !important;
+  }
 }
 
 @media (min-width: 1200px) {
-  [data-testid="stMainBlockContainer"] { max-width: 1140px !important; }
+  [data-testid="stMainBlockContainer"] {
+    max-width: 1140px !important;
+  }
 }
 
 @media (min-width: 1400px) {
-  [data-testid="stMainBlockContainer"] { max-width: 1320px !important; }
+  [data-testid="stMainBlockContainer"] {
+    max-width: 1320px !important;
+  }
 }
 
 /* 8. BRAND HEADER */
@@ -329,7 +388,7 @@ button[data-testid^="baseButton-"] *,
 
 .m-nav-link {
   font-family: 'Inter', -apple-system, sans-serif !important;
-  font-size: 1rem !important;
+  font-size: .85rem !important;
   font-weight: 500 !important;
   color: #93C5FD !important;
   text-decoration: none !important;
@@ -365,20 +424,20 @@ button[data-testid^="baseButton-"] *,
 
 .m-user-label {
   font-family: 'Inter', -apple-system, sans-serif !important;
-  font-size: .85rem !important;
+  font-size: .75rem !important;
   color: #93C5FD;
 }
 
 .m-user-name {
   font-family: 'Inter', -apple-system, sans-serif !important;
-  font-size: .97rem !important;
+  font-size: .75rem !important;
   font-weight: 600 !important;
   color: #F9FAFB;
 }
 
 .m-signout {
   font-family: 'Inter', -apple-system, sans-serif !important;
-  font-size: .95rem !important;
+  font-size: .85rem !important;
   color: #93C5FD !important;
   text-decoration: none !important;
   padding: .2rem .45rem;
@@ -401,6 +460,10 @@ button[data-testid^="baseButton-"] *,
 @media (max-width: 768px) {
   .m-nav {
     display: none !important;
+  }
+
+  .m-user-area {
+    margin-left: auto;
   }
 
   .m-hamburger-wrap {
@@ -469,7 +532,66 @@ button[data-testid^="baseButton-"] *,
 }
 
 .m-nav-mobile .m-nav-link {
-  font-size: 1.1rem !important;
+  font-size: 1rem !important;
   padding: .6rem .75rem;
   display: block;
+}
+
+/* 10. BRAND FOOTER */
+#meridant-footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100vw;
+  height: 44px;
+  background: #0F2744;
+  border-top: 1px solid #1e3a5f;
+  display: flex;
+  align-items: center;
+  padding: 0 1.25rem;
+  gap: 1.25rem;
+  z-index: 999999;
+}
+
+#meridant-footer .mf-wordmark {
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  font-size: 13px !important;
+  font-weight: 300 !important;
+  letter-spacing: 0.08em;
+  color: #93C5FD;
+  white-space: nowrap;
+}
+
+#meridant-footer .mf-sep {
+  width: 1px;
+  height: 18px;
+  background: #1e3a5f;
+  flex-shrink: 0;
+}
+
+#meridant-footer .mf-product {
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 10px !important;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #6B7280;
+  white-space: nowrap;
+}
+
+#meridant-footer .mf-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+#meridant-footer .mf-copy {
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  font-size: 11px !important;
+  color: #6B7280;
+  white-space: nowrap;
+}
+
+[data-testid="stMainBlockContainer"] {
+  padding-bottom: 3.5rem !important;
 }

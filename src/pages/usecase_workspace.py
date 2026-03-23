@@ -89,7 +89,7 @@ def render() -> None:
         st.subheader("Current Intent Tags")
         intent_df = _query_df(client, q_get_usecase_intent(selected_id))
         if not intent_df.empty:
-            st.dataframe(intent_df, width='stretch')
+            st.dataframe(intent_df, use_container_width=True)
         else:
             st.info("No intent tags assigned yet.")
 
@@ -115,7 +115,7 @@ def render() -> None:
         st.subheader("Discovered Capabilities")
         cap_df = _query_df(client, q_discover_capabilities(selected_id))
         if not cap_df.empty:
-            st.dataframe(cap_df, width='stretch')
+            st.dataframe(cap_df, use_container_width=True)
         else:
             st.info("Assign intent tags first to discover matching capabilities.")
 
@@ -137,7 +137,7 @@ def render() -> None:
         phase_df = _query_df(client, q_roadmap_phase_counts(selected_id))
         if not phase_df.empty:
             st.bar_chart(phase_df.set_index("phase"))
-            st.dataframe(phase_df, width='stretch')
+            st.dataframe(phase_df, use_container_width=True)
         else:
             st.info("No roadmap data yet. Click 'Generate Roadmap' above.")
 
@@ -150,7 +150,7 @@ def render() -> None:
 
         cluster_df = _query_df(client, q_cluster_roadmap(selected_id))
         if not cluster_df.empty:
-            st.dataframe(cluster_df, width='stretch')
+            st.dataframe(cluster_df, use_container_width=True)
         else:
             st.info("No cluster roadmap yet. Generate the capability roadmap first.")
 
@@ -164,7 +164,7 @@ def render() -> None:
 
         inv_df = _query_df(client, q_latest_investment_selection(selected_id))
         if not inv_df.empty:
-            st.dataframe(inv_df, width='stretch')
+            st.dataframe(inv_df, use_container_width=True)
         else:
             st.info("No investment results yet.")
 

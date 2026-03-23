@@ -150,13 +150,9 @@ def load_capabilities_with_maturity(_client, framework_id: int = 1):
         """
         SELECT
             c.id, c.capability_name, c.capability_description,
-            c.domain_id, c.subdomain_id, c.owner_role,
-            AVG(ma.maturity_score) AS avg_maturity
+            c.category, c.domain_id, c.subdomain_id, c.owner_role
         FROM Next_Capability c
-        LEFT JOIN Next_MaturityAssessment ma ON ma.capability_id = c.id
         WHERE c.framework_id = ?
-        GROUP BY c.id, c.capability_name, c.capability_description,
-                 c.domain_id, c.subdomain_id, c.owner_role
         ORDER BY c.domain_id, c.subdomain_id, c.id
         """,
         [framework_id]
@@ -333,10 +329,8 @@ def render() -> None:
     transition:transform .15s, box-shadow .15s, border-color .15s;
   }
   .cap-card:hover { transform:translateY(-2px); box-shadow:0 4px 12px rgba(0,0,0,.08); border-color:#D1D5DB; }
-  .cap-name  { font-size:.78rem; font-weight:700; color:#111827; margin-bottom:.5rem; line-height:1.3; min-height:2.2rem; }
-  .pip-track { display:flex; gap:3px; margin-bottom:.4rem; }
-  .pip       { flex:1; height:4px; border-radius:2px; }
-  .cap-meta  { font-size:.64rem; color:#6B7280; }
+  .cap-identifier { font-size:.62rem; font-family:'JetBrains Mono',monospace; color:#6B7280; margin-bottom:.25rem; }
+  .cap-name  { font-size:.78rem; font-weight:700; color:#111827; line-height:1.3; }
 
   .bc-nav { display:flex; align-items:center; gap:.5rem; font-size:.75rem; color:#6B7280; margin-bottom:1.2rem; font-family:'JetBrains Mono',monospace; }
   .bc-link { color:var(--accent); cursor:pointer; text-decoration:underline; }
@@ -385,7 +379,6 @@ def render() -> None:
   .level-state  { font-size:.8rem; color:#374151; line-height:1.6; margin-bottom:.8rem; }
   .level-indicators { font-size:.75rem; color:#6B7280; }
   .level-badge  { font-family:'JetBrains Mono',monospace; font-size:.65rem; font-weight:700; padding:.25rem .6rem; border-radius:4px; display:inline-block; margin-bottom:.8rem; }
-  .maturity-current { font-family:'JetBrains Mono',monospace; font-size:1.6rem; font-weight:700; line-height:1; }
   .owner-badge  { background:#F3F4F6; border:1px solid #D1D5DB; border-radius:4px; padding:.2rem .5rem; font-size:.68rem; color:#6B7280; }
 </style>
 </head>
@@ -444,12 +437,6 @@ def render() -> None:
           <span id="modal-subdomain-badge" class="badge" style="background:#F3F4F6;color:#6B7280;font-size:.65rem"></span>
         </div>
         <h6 class="fw-bold" id="modal-cap-name" style="color:#111827;font-size:.95rem;margin:0"></h6>
-      </div>
-      <div class="d-flex align-items-center gap-3 ms-auto me-3">
-        <div class="text-center">
-          <div class="maturity-current" id="modal-maturity-val" style="color:var(--accent)">-</div>
-          <div style="font-size:.62rem;color:#6B7280;text-transform:uppercase;letter-spacing:.06em">Avg Maturity</div>
-        </div>
       </div>
       <button type="button" class="overlay-close" id="overlay-close-x">&#x2715;</button>
     </div>
@@ -595,12 +582,6 @@ function fmt(v) {
   const n = parseFloat(v);
   return (!v && v !== 0) || isNaN(n) ? '-' : n.toFixed(1);
 }
-function renderPips(avg, color) {
-  const s = parseFloat(avg) || 0;
-  let h = '<div class="pip-track">';
-  for (let i = 1; i <= 5; i++) h += `<div class="pip" style="background:${i <= Math.round(s) ? color : '#D1D5DB'}"></div>`;
-  return h + '</div>';
-}
 
 // Domain cards
 function renderDomainGrid() {
@@ -715,10 +696,12 @@ function renderCapabilities(sdId, color, sdName) {
   caps.forEach(cap => {
     const col = document.createElement('div');
     col.className = 'col-6 col-md-4 col-lg-3';
+    const isIdCode  = /^[A-Z]{2,3}\.[A-Z]{2,4}-\d{2}$/.test(cap.capability_name);
+    const cardLabel = (isIdCode && cap.category) ? cap.category : cap.capability_name;
+    const cardIdBadge = isIdCode ? `<div class="cap-identifier">${cap.capability_name}</div>` : '';
     col.innerHTML = `<div class="cap-card" style="border-top:2px solid ${color}" onclick="openCapModal(${cap.id})">
-      <div class="cap-name">${cap.capability_name}</div>
-      ${renderPips(cap.avg_maturity, color)}
-      <div class="cap-meta">Maturity: <span class="mono" style="color:${color}">${fmt(cap.avg_maturity)}</span></div>
+      ${cardIdBadge}
+      <div class="cap-name">${cardLabel}</div>
     </div>`;
     grid.appendChild(col);
   });
@@ -754,10 +737,17 @@ function openCapModal(capId) {
   const color  = domain ? DOMAIN_COLORS[(domain.id - 1) % DOMAIN_COLORS.length] : '#6B7280';
   const levels = capLevelMap[capId] || [];
 
-  document.getElementById('modal-cap-name').textContent      = cap.capability_name;
-  document.getElementById('modal-cap-desc').textContent      = cap.capability_description || 'No description available.';
-  document.getElementById('modal-maturity-val').textContent  = fmt(cap.avg_maturity);
-  document.getElementById('modal-maturity-val').style.color  = color;
+  const modalNameEl = document.getElementById('modal-cap-name');
+  const isIdCode = /^[A-Z]{2,3}\.[A-Z]{2,4}-\d{2}$/.test(cap.capability_name);
+  if (isIdCode && cap.category) {
+    modalNameEl.innerHTML = `${cap.category} <span style="font-size:.7rem;font-weight:400;color:#6B7280;margin-left:.4rem;font-family:monospace">${cap.capability_name}</span>`;
+  } else {
+    modalNameEl.textContent = cap.capability_name;
+  }
+  const levels0 = capLevelMap[capId] || [];
+  const l1desc  = levels0.length ? (levels0[0].capability_state || '') : '';
+  document.getElementById('modal-cap-desc').textContent =
+    cap.capability_description || l1desc || 'No description available.';
 
   const domBadge = document.getElementById('modal-domain-badge');
   domBadge.textContent      = domain ? domain.domain_name : '';

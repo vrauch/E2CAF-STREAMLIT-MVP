@@ -5,3 +5,10 @@ fileWatcherType = "watchdog"
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+primaryColor = "#2563EB"
+backgroundColor = "#F9FAFB"
+secondaryBackgroundColor = "#F3F4F6"
+textColor = "#111827"
+font = "sans serif"

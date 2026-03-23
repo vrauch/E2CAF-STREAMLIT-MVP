@@ -157,6 +157,18 @@ st.session_state.setdefault(
     "authenticated_username", st.session_state.get("username", "")
 )
 
+# - Brand footer (injected before page render so st.stop() in pages doesn't block it) --
+st.markdown("""
+<div id="meridant-footer">
+  <span class="mf-wordmark">meridant</span>
+  <div class="mf-sep"></div>
+  <span class="mf-product">Meridant Matrix</span>
+  <div class="mf-right">
+    <span class="mf-copy">&copy; 2026 Meridant. All rights reserved.</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
 # - Route to page -------------------------------
 if _page == "Dashboard":
     dashboard.render()
