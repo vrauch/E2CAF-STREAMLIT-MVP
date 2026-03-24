@@ -592,7 +592,12 @@ function navTo(stepKey){{
 
 
 def render():
-    st.title("Create Assessment")
+    st.markdown(
+        """
+        <div class="m-page-title">Create Assessment</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     # Init session state
     st.session_state.setdefault("use_case_name", "")

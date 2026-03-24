@@ -184,6 +184,7 @@ def load_use_cases(_client, framework_id: int = 1):
 # ── render ────────────────────────────────────────────────────────────────────
 
 def render() -> None:
+    st.markdown('<div class="m-page-title">DASHBOARD</div>', unsafe_allow_html=True)
     client = get_client()
 
     framework_id = st.session_state.get("framework_id", 1)
