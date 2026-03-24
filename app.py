@@ -6,6 +6,7 @@ import os
 import streamlit as st
 import streamlit_authenticator as stauth
 import yaml
+from streamlit_authenticator.utilities.exceptions import LoginError
 from yaml.loader import SafeLoader
 
 # Silence noisy library loggers
@@ -82,7 +83,22 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-authenticator.login()
+try:
+  authenticator.login()
+except LoginError as exc:
+  if str(exc) == "User not authorized":
+    # This usually means a stale cookie token references a username
+    # that is no longer present in auth_config.yaml.
+    authenticator.cookie_controller.delete_cookie()
+    st.session_state["_auth_notice"] = (
+      "Your login session was reset. Please sign in again."
+    )
+    st.rerun()
+  st.error(str(exc))
+  st.stop()
+
+if st.session_state.get("_auth_notice"):
+  st.info(st.session_state.pop("_auth_notice"))
 
 if st.session_state.get("authentication_status") is False:
     st.error("Incorrect username or password.")

@@ -696,7 +696,7 @@ function renderCapabilities(sdId, color, sdName) {
   caps.forEach(cap => {
     const col = document.createElement('div');
     col.className = 'col-6 col-md-4 col-lg-3';
-    const isIdCode  = /^[A-Z]{2,3}\.[A-Z]{2,4}-\d{2}$/.test(cap.capability_name);
+    const isIdCode  = /^[A-Z]{2,3}\\.[A-Z]{2,4}-\\d{2}$/.test(cap.capability_name);
     const cardLabel = (isIdCode && cap.category) ? cap.category : cap.capability_name;
     const cardIdBadge = isIdCode ? `<div class="cap-identifier">${cap.capability_name}</div>` : '';
     col.innerHTML = `<div class="cap-card" style="border-top:2px solid ${color}" onclick="openCapModal(${cap.id})">
@@ -738,7 +738,7 @@ function openCapModal(capId) {
   const levels = capLevelMap[capId] || [];
 
   const modalNameEl = document.getElementById('modal-cap-name');
-  const isIdCode = /^[A-Z]{2,3}\.[A-Z]{2,4}-\d{2}$/.test(cap.capability_name);
+  const isIdCode = /^[A-Z]{2,3}\\.[A-Z]{2,4}-\\d{2}$/.test(cap.capability_name);
   if (isIdCode && cap.category) {
     modalNameEl.innerHTML = `${cap.category} <span style="font-size:.7rem;font-weight:400;color:#6B7280;margin-left:.4rem;font-family:monospace">${cap.capability_name}</span>`;
   } else {
