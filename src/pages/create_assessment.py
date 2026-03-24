@@ -1,4 +1,6 @@
 import base64
+import os
+import time
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -1225,6 +1227,14 @@ def render():
             from src.question_generator import generate_questions_for_capability
 
             use_case = st.session_state.use_case_name
+            question_call_delay = max(
+                0.0,
+                float(os.getenv("QUESTION_GEN_CALL_DELAY_SECONDS", "1.5")),
+            )
+            per_cap_attempts = max(
+                1,
+                int(os.getenv("QUESTION_GEN_CAPABILITY_ATTEMPTS", "2")),
+            )
 
             caps = []
             caps += [(c, "Core") for c in st.session_state.core_caps]
@@ -1234,21 +1244,42 @@ def render():
                 caps += [(c, "Downstream") for c in st.session_state.downstream_caps]
 
             questions = []
+            failed_caps = []
             progress_bar = st.progress(0)
             status = st.empty()
             total_caps = len(caps)
 
             for i, (cap, role) in enumerate(caps):
-                status.caption(f"Generating questions for {cap['capability_name']} ({role})...")
-                questions.extend(
-                    generate_questions_for_capability(
-                        use_case=use_case,
-                        cap=cap,
-                        role=role,
-                        questions_per_capability=q_per_cap,
-                        style=style,
-                    )
-                )
+                if i > 0 and question_call_delay > 0:
+                    time.sleep(question_call_delay)
+                cap_name = cap["capability_name"]
+                generated = False
+                last_err = None
+                for attempt in range(1, per_cap_attempts + 1):
+                    try:
+                        suffix = (
+                            f" (attempt {attempt}/{per_cap_attempts})"
+                            if per_cap_attempts > 1 else ""
+                        )
+                        status.caption(f"Generating questions for {cap_name} ({role}){suffix}...")
+                        questions.extend(
+                            generate_questions_for_capability(
+                                use_case=use_case,
+                                cap=cap,
+                                role=role,
+                                questions_per_capability=q_per_cap,
+                                style=style,
+                            )
+                        )
+                        generated = True
+                        break
+                    except Exception as e:
+                        last_err = str(e)
+                        if attempt < per_cap_attempts:
+                            time.sleep(max(1.0, question_call_delay))
+
+                if not generated:
+                    failed_caps.append({"capability_name": cap_name, "role": role, "error": last_err or "unknown error"})
                 progress_bar.progress((i + 1) / total_caps)
 
             status.caption(f"Done — {len(questions)} questions generated.")
@@ -1256,7 +1287,21 @@ def render():
             if st.session_state.get("assessment_id"):
                 db = get_client()
                 save_questions(db, st.session_state.assessment_id, st.session_state.questions)
-            st.success(f"Generated {len(questions)} questions across {total_caps} capabilities.")
+
+            success_caps = total_caps - len(failed_caps)
+            if failed_caps:
+                sample = ", ".join(f"{c['capability_name']} ({c['role']})" for c in failed_caps[:3])
+                more = "" if len(failed_caps) <= 3 else f" and {len(failed_caps) - 3} more"
+                st.warning(
+                    "Some capabilities could not be generated after retries. "
+                    f"Succeeded: {success_caps}/{total_caps}. Failed: {len(failed_caps)}. "
+                    f"Examples: {sample}{more}."
+                )
+
+            if questions:
+                st.success(f"Generated {len(questions)} questions across {success_caps}/{total_caps} capabilities.")
+            else:
+                st.error("Question generation failed for all capabilities. Please try again in a minute.")
 
         if st.session_state.questions:
             df_q = pd.DataFrame(st.session_state.questions)

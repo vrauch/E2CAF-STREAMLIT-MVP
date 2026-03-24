@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import random
 import logging
 from anthropic import Anthropic, APIStatusError
 
@@ -11,6 +12,8 @@ _client = None
 DEFAULT_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 MAX_RETRIES = int(os.getenv("ANTHROPIC_MAX_RETRIES", "3"))
 RETRY_BASE_DELAY = float(os.getenv("ANTHROPIC_RETRY_DELAY", "2.0"))
+RETRY_MAX_DELAY = float(os.getenv("ANTHROPIC_RETRY_MAX_DELAY", "20.0"))
+RETRY_JITTER_SECONDS = float(os.getenv("ANTHROPIC_RETRY_JITTER", "0.75"))
 
 
 def get_ai_client() -> Anthropic:
@@ -24,16 +27,22 @@ def get_ai_client() -> Anthropic:
 
 
 def _call_with_retry(client: Anthropic, **kwargs):
-    """Call client.messages.create with exponential backoff on 529 overload."""
+    """Call client.messages.create with jittered exponential backoff on transient overload/rate limits."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             return client.messages.create(**kwargs)
         except APIStatusError as e:
-            if e.status_code == 529 and attempt < MAX_RETRIES:
-                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            is_retryable = e.status_code in (429, 529)
+            if is_retryable and attempt < MAX_RETRIES:
+                backoff = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                jitter = random.uniform(0.0, max(0.0, RETRY_JITTER_SECONDS))
+                delay = min(RETRY_MAX_DELAY, backoff + jitter)
                 logger.warning(
-                    "Anthropic overloaded (529). Retry %d/%d in %.1fs",
-                    attempt, MAX_RETRIES, delay,
+                    "Anthropic transient error (%s). Retry %d/%d in %.1fs",
+                    e.status_code,
+                    attempt,
+                    MAX_RETRIES,
+                    delay,
                 )
                 time.sleep(delay)
             else:
