@@ -128,6 +128,82 @@ Return exactly {top_k} items, sorted by ai_score descending.
         results.append(merged)
 
     return results
+def summarize_respondent_voices(
+    voices: list[dict],
+    client_name: str = "",
+    use_case_name: str = "",
+    client_industry: str = "",
+    client_country: str = "",
+) -> str:
+    """Synthesise all survey respondent quotes into a cohesive Stakeholder Perspectives block.
+
+    voices: [{"respondent_name", "respondent_role", "capability_name", "domain", "score", "notes"}]
+    Returns 2-3 paragraphs of plain text suitable for a report section or presentation slide.
+    """
+    if not voices:
+        return ""
+
+    ai_client = get_ai_client()
+
+    _LABELS = {1: "Not Defined", 2: "Informal", 3: "Defined", 4: "Governed", 5: "Optimised"}
+
+    # Format voices: group by domain for readability
+    from collections import defaultdict
+    by_domain: dict[str, list[str]] = defaultdict(list)
+    for v in voices:
+        role   = v.get("respondent_role") or "Respondent"
+        name   = v.get("respondent_name") or "Anonymous"
+        cap    = v.get("capability_name") or ""
+        domain = v.get("domain") or "General"
+        score  = v.get("score")
+        notes  = (v.get("notes") or "").strip()
+        label  = _LABELS.get(score, str(score)) if score else "?"
+        by_domain[domain].append(
+            f'  - {name} ({role}), {cap}, score {score} — {label}: "{notes}"'
+        )
+
+    voices_text = "\n".join(
+        f"{domain}:\n" + "\n".join(lines)
+        for domain, lines in sorted(by_domain.items())
+    )
+
+    client_ctx = " ".join(filter(None, [client_name, f"({client_industry})" if client_industry else "", f"in {client_country}" if client_country else ""]))
+
+    prompt = f"""You are a senior enterprise transformation consultant preparing a "Stakeholder Perspectives" section for an executive assessment report.
+
+You have collected direct responses from {len(set(v.get("respondent_name","") for v in voices))} stakeholders at {client_ctx or "the client organisation"} as part of a {use_case_name or "capability maturity"} assessment.
+
+Below are their verbatim quotes, grouped by capability domain, along with their role and maturity rating:
+
+{voices_text}
+
+Write a "Stakeholder Perspectives" section of 2–3 paragraphs that:
+1. Opens with the overall tone of stakeholder sentiment — are respondents broadly aware of gaps, or is there a disconnect between how different roles see the organisation's maturity?
+2. Weaves in 3–4 direct attributed quotes (e.g. "One Engineering Lead noted that...") that best illustrate key themes — prioritise quotes that are specific, candid, or reveal material disagreement between stakeholders
+3. Identifies which domains had the strongest evidence (multiple respondents with detailed rationale) vs. sparse input, and what that signals
+4. Closes with the key implication for the executive team — what do these stakeholder voices tell leadership that the scores alone do not?
+
+Rules:
+- Write in flowing paragraphs — no bullet points, no headings
+- Use attribution like "One [Role] observed..." or "[Name] ([Role]) noted..." — vary the phrasing
+- Where two respondents disagreed materially on the same capability, surface that tension explicitly
+- Do not quote every respondent — select the most illustrative
+- Do not invent or infer information not present in the quotes
+- Professional consulting tone suitable for a CIO or executive sponsor
+- Do NOT name specific vendors or products unless they appear verbatim in the quotes above
+
+Return ONLY the narrative text — no preamble, no markdown.
+"""
+
+    response = _call_with_retry(
+        ai_client,
+        model=DEFAULT_MODEL,
+        max_tokens=900,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text.strip()
+
+
 def generate_findings_narrative(
     use_case_name: str,
     intent_text: str,
@@ -140,6 +216,7 @@ def generate_findings_narrative(
     client_industry: str = "",
     client_country: str = "",
     client_stated_context: str = "",
+    respondent_voices: list[dict] | None = None,
 ) -> str:
     """
     Uses Claude to generate a contextual executive findings narrative
@@ -176,6 +253,28 @@ def generate_findings_narrative(
             parts.append(f"COUNTRY / MARKET: {client_country}")
         client_context = "\n".join(parts) + "\n"
 
+    # Format respondent voices block if supplied
+    _voices_block = ""
+    if respondent_voices:
+        _LABELS = {1: "Not Defined", 2: "Informal", 3: "Defined", 4: "Governed", 5: "Optimised"}
+        _voice_lines = []
+        for v in respondent_voices[:30]:   # cap at 30 to stay within token budget
+            _name  = v.get("respondent_name") or "Respondent"
+            _role  = v.get("respondent_role") or ""
+            _cap   = v.get("capability_name") or ""
+            _score = v.get("score")
+            _notes = (v.get("notes") or "").strip()
+            _label = _LABELS.get(_score, str(_score)) if _score else "?"
+            _attr  = f"{_name} ({_role})" if _role else _name
+            _voice_lines.append(f'  - {_attr}, {_cap}, {_label}: "{_notes}"')
+        _voices_block = (
+            "\nRESPONDENT VOICES (direct quotes — weave 2–3 attributed quotes into the narrative "
+            "where they sharpen a key finding; use attribution like \"One [Role] observed...\" or "
+            "\"[Name] noted...\"; do not quote every respondent):\n"
+            + "\n".join(_voice_lines)
+            + "\n"
+        )
+
     prompt = f"""You are a senior enterprise transformation consultant writing an executive assessment findings report.
 
 The following capability assessment has been completed:
@@ -194,14 +293,14 @@ HIGH RISK CAPABILITIES (score below 2):
 
 TOP CAPABILITY GAPS (largest gap to target of 3):
 {gap_summary}
-
+{_voices_block}
 CLIENT-STATED CONTEXT (verbatim from assessment answers and notes — the ONLY permitted source of specific vendor, tool, or product names):
 {client_stated_context or "  None — no free-text answers were provided in this assessment."}
 
 Write a professional executive summary of 3–4 paragraphs that:
 1. Opens with an overall assessment of maturity relative to the use case intent, grounded in the client's industry and country context where relevant
 2. Highlights the strongest and weakest domains with specific observations relevant to a {client_industry or "enterprise"} organisation operating in {client_country or "their market"}
-3. Calls out high-risk capabilities and what this means for the transformation given the client's industry dynamics
+3. Calls out high-risk capabilities and what this means for the transformation given the client's industry dynamics — if respondent voices are provided, incorporate 2–3 attributed quotes where they directly reinforce a finding
 4. Closes with 3 prioritised recommendations for immediate action, informed by typical pressures and constraints faced by {client_industry or "enterprise"} organisations in {client_country or "this market"}
 
 Write in a direct, professional consulting tone suitable for a CIO or executive sponsor.
@@ -312,13 +411,21 @@ def generate_gap_recommendations(
     """
     client = get_ai_client()
 
-    response_block = "\n".join(
-        f"  Q: {r.get('question', '')}\n"
-        f"  Score: {r.get('score', 'N/A')}/5"
-        + (f"\n  Answer: {r.get('answer', '')}" if r.get("answer") else "")
-        + (f"\n  Notes: {r.get('notes', '')}" if r.get("notes") else "")
-        for r in scored_responses
-    ) or "  No responses recorded."
+    def _fmt_response(r: dict) -> str:
+        lines = [
+            f"  Q: {r.get('question', '')}",
+            f"  Score: {r.get('score', 'N/A')}/5",
+        ]
+        if r.get("respondent_name"):
+            role_part = f" ({r.get('respondent_role', '')})" if r.get("respondent_role") else ""
+            lines.append(f"  Respondent: {r['respondent_name']}{role_part}")
+        if r.get("answer"):
+            lines.append(f"  Answer: {r['answer']}")
+        if r.get("notes"):
+            lines.append(f"  Notes: {r['notes']}")
+        return "\n".join(lines)
+
+    response_block = "\n\n".join(_fmt_response(r) for r in scored_responses) or "  No responses recorded."
 
     # Extract verbatim client-stated context from all answer and notes fields.
     # This is the ONLY permitted source of specific vendor/tool/product names.
@@ -340,7 +447,7 @@ def generate_gap_recommendations(
     )
 
     phase_hint = (
-        f"The MMTF framework places this capability in Phase {framework_phase} "
+        f"The framework places this capability in Phase {framework_phase} "
         f"of the transformation journey."
         if framework_phase
         else "No framework phase constraint applies."
@@ -391,7 +498,7 @@ Return ONLY a valid JSON object with no preamble, no markdown, no explanation:
     "<measurable outcome 1 — specific, not generic>",
     "<measurable outcome 2>"
   ],
-  "narrative": "<2-3 sentence recommendation paragraph written for a CIO or executive sponsor, explaining why this gap matters in the context of the client's industry and market, and what the recommended path forward is>"
+  "narrative": "<2-3 sentence recommendation paragraph written for a CIO or executive sponsor, explaining why this gap matters in the context of the client's industry and market, and what the recommended path forward is. If assessment responses include notes from named respondents, weave 1-2 attributed quotes into the narrative using phrasing such as 'One [Role] observed...' or '[Name] noted...' — but only when the quote directly supports a finding.>"
 }}
 
 Rules:
@@ -399,7 +506,7 @@ Rules:
 - If foundational dependencies exist, the first action must address them
 - enabling_dependencies: only list capabilities (from the foundational deps provided) that truly block progress; leave empty array if none
 - success_indicators: measurable, time-bound where possible, relevant to the client's industry
-- narrative: explicitly reference the client's industry and/or market dynamics where they affect urgency or approach
+- narrative: explicitly reference the client's industry and/or market dynamics where they affect urgency or approach; include 1-2 attributed stakeholder quotes when available in the response data
 - Do not repeat the raw scores — interpret what they mean
 - CRITICAL — technology grounding: Do NOT name specific vendors, cloud providers, platforms, or products (e.g. Azure, AWS, Splunk, ServiceNow, Kubernetes) unless that specific name appears verbatim in the CLIENT-STATED CONTEXT above. When specific tools are not confirmed, use the capability or category description instead (e.g. "a container registry solution" not "Azure Container Registry", "a SIEM platform" not "Splunk", "a cloud-native CI/CD pipeline" not "GitHub Actions"). Violating this rule introduces misinformation into a client-facing report.
 """

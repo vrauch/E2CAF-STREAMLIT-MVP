@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 
+import base64
+
 import streamlit as st
 import streamlit_authenticator as stauth
 import yaml
@@ -15,9 +17,16 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("anthropic").setLevel(logging.WARNING)
 logging.getLogger("watchdog").setLevel(logging.WARNING)
 
-from src.pages import create_assessment, dashboard, admin_users, assessments
+from src.pages import create_assessment, dashboard, admin_users, assessments, assessment_detail
 
 st.set_page_config(page_title="Meridant Matrix", layout="wide", initial_sidebar_state="collapsed")
+
+# ── Survey route — public, no auth required ──────────────────────────────────
+_survey_token = st.query_params.get("survey")
+if _survey_token:
+    from src.pages import survey as _survey_mod
+    _survey_mod.render(_survey_token)
+    st.stop()
 
 # - Brand CSS ---------------------------------
 _brand_css_path = os.path.join(os.path.dirname(__file__), "assets", "meridant_brand.css")
@@ -65,13 +74,10 @@ authenticator = stauth.Authenticate(
 )
 
 # - Brand header (login page - no nav yet) ------------------
-_LOGO = """<svg width="48" height="36" viewBox="0 0 40 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <polyline points="0,32 11,6 20,20" fill="none" stroke="#F9FAFB" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <polyline points="20,20 29,2 40,32" fill="none" stroke="#2563EB" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="4" y1="8" x2="36" y2="0" stroke="#2563EB" stroke-width="1" stroke-dasharray="2.5,2" stroke-linecap="round"/>
-  <circle cx="11" cy="6" r="2" fill="none" stroke="#F9FAFB" stroke-width="1.6"/>
-  <circle cx="29" cy="2" r="2" fill="#2563EB"/>
-</svg>"""
+_logo_path = os.path.join(os.path.dirname(__file__), "assets", "logo-2000px.png")
+with open(_logo_path, "rb") as _f:
+    _logo_b64 = base64.b64encode(_f.read()).decode()
+_LOGO = f'<img src="data:image/png;base64,{_logo_b64}" height="48" style="object-fit:contain;"/>'
 
 st.markdown(f"""
 <div id="meridant-brand">
@@ -122,15 +128,16 @@ _nav_pages = ["Dashboard", "Assessments", "Create Assessment"]
 if _is_admin:
     _nav_pages.append("Admin")
 
-# Handle cross-page navigation from session state (e.g. Resume Assessment)
+# Handle cross-page navigation from session state (e.g. Resume Assessment, Detail view)
 _nav_target = st.session_state.pop("_navigate_to", None)
-if _nav_target and _nav_target in _nav_pages:
+_HIDDEN_PAGES = {"Assessment Detail", "Assessments"}  # navigable but not in nav bar
+if _nav_target and (_nav_target in _nav_pages or _nav_target in _HIDDEN_PAGES):
     st.query_params["page"] = _nav_target
     st.rerun()
 
 # Current page from URL
 _page = st.query_params.get("page", "Dashboard")
-if _page not in _nav_pages:
+if _page not in _nav_pages and _page not in _HIDDEN_PAGES:
     _page = "Dashboard"
 
 # Build nav HTML
@@ -192,5 +199,7 @@ elif _page == "Assessments":
     assessments.render()
 elif _page == "Create Assessment":
     create_assessment.render()
+elif _page == "Assessment Detail":
+    assessment_detail.render(st.session_state.get("_detail_assessment_id"))
 elif _page == "Admin":
     admin_users.render()

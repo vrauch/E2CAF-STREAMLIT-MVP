@@ -147,7 +147,14 @@ def analyze_use_case_readonly(
         """
         SELECT
             nc.id            AS capability_id,
-            nc.capability_name,
+            -- For NIST-style subcategory ID codes, use the human-readable category name
+            CASE
+                WHEN nc.capability_name GLOB '[A-Z][A-Z].[A-Z][A-Z]-[0-9][0-9]'
+                  OR nc.capability_name GLOB '[A-Z][A-Z][A-Z].[A-Z][A-Z]-[0-9][0-9]'
+                  OR nc.capability_name GLOB '[A-Z][A-Z]-[A-Z][A-Z][A-Z]-[0-9][0-9]'
+                THEN COALESCE(NULLIF(nc.category,''), nc.capability_name)
+                ELSE nc.capability_name
+            END              AS capability_name,
             nd.domain_name,
             ns.subdomain_name
         FROM Next_Capability nc

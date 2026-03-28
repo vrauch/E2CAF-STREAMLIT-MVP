@@ -87,7 +87,8 @@ def _load_level_descriptor(db: MeridantClient, capability_id: int, level: int) -
 def _load_responses(db: MeridantClient, assessment_id: int, capability_id: int) -> list[dict]:
     res = db.query(
         """
-        SELECT question, response_type, score, answer, notes
+        SELECT question, response_type, score, answer, notes,
+               respondent_name, respondent_role
         FROM AssessmentResponse
         WHERE assessment_id = ? AND capability_id = ?
         """,

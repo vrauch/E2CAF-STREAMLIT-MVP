@@ -1,6 +1,8 @@
 """Persistence layer for completed assessments."""
 
 import json
+import math
+import uuid
 from datetime import datetime
 from src.meridant_client import MeridantClient
 
@@ -9,6 +11,9 @@ _consultant_column_ensured = False
 _framework_id_column_ensured = False
 _roadmap_progress_table_ensured = False
 _respondent_columns_ensured = False
+_survey_columns_ensured = False
+_finding_survey_columns_ensured = False
+_synthesis_column_ensured = False
 
 
 def _ensure_narrative_column(client: MeridantClient) -> None:
@@ -309,8 +314,8 @@ def save_assessment(client: MeridantClient, session: dict) -> int:
                     r.get("score"),
                     r.get("answer"),
                     r.get("notes", ""),
-                    None,   # respondent_name — canonical row
-                    None,   # respondent_role
+                    r.get("respondent_name") or None,   # workshop session name if set
+                    r.get("respondent_role") or None,   # workshop group if set
                 )
                 for r in responses.values()
             ]
@@ -362,8 +367,8 @@ def save_assessment(client: MeridantClient, session: dict) -> int:
                 r.get("score"),
                 r.get("answer"),
                 r.get("notes", ""),
-                None,   # respondent_name — canonical row
-                None,   # respondent_role
+                r.get("respondent_name") or None,   # workshop session name if set
+                r.get("respondent_role") or None,   # workshop group if set
             )
             for r in responses.values()
         ]
@@ -389,15 +394,21 @@ def save_findings(
     cap_scores: list[dict],
     dom_scores: list[dict],
     overall_score: float,
+    respondent_stats: dict | None = None,
 ) -> None:
     """
     Persists computed capability scores, domain scores, and overall score
     back to the database for the given assessment.
     Uses a single AssessmentFinding table with finding_type = 'capability' | 'domain'.
+
+    respondent_stats: optional {capability_id: {"avg_score", "std_dev", "respondent_count"}}
+    When provided, writes respondent_count and score_std_dev to capability finding rows.
     """
 
     # Ensure findings_narrative column exists (one-time inline migration)
     _ensure_narrative_column(client)
+    if respondent_stats:
+        _ensure_finding_survey_columns(client)
 
     # ── Update overall score, status, and completed_at on Assessment header ──
     client.write(
@@ -424,14 +435,18 @@ def save_findings(
             int(d.get("target", 3)),
             d.get("gap"),
             _risk(d.get("avg_score")),
+            None,                          # respondent_count
+            None,                          # score_std_dev
         ))
 
     # ── Capability findings ──
     for c in (cap_scores or []):
+        cid = c.get("capability_id")
+        stats = (respondent_stats or {}).get(cid) if cid else None
         rows.append((
             assessment_id, "capability",
             c.get("domain", ""),           # domain
-            c.get("capability_id"),        # capability_id
+            cid,                           # capability_id
             c.get("capability_name", ""),  # capability_name
             c.get("capability_role", ""),  # capability_role
             c.get("subdomain"),            # subdomain
@@ -439,16 +454,20 @@ def save_findings(
             int(c.get("target", 3)),
             c.get("gap"),
             _risk(c.get("avg_score")),
+            stats["respondent_count"] if stats else None,
+            stats["std_dev"] if stats else None,
         ))
 
     if rows:
+        _ensure_finding_survey_columns(client)
         client.write_many(
             """
             INSERT INTO AssessmentFinding
                 (assessment_id, finding_type, domain, capability_id,
                  capability_name, capability_role, subdomain,
-                 avg_score, target_maturity, gap, risk_level)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 avg_score, target_maturity, gap, risk_level,
+                 respondent_count, score_std_dev)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -660,16 +679,50 @@ def load_roadmap_progress(client: MeridantClient, assessment_id: int) -> dict:
     return {r["initiative_id"]: r["status"] for r in res.get("rows", [])}
 
 
-def list_assessments(client: MeridantClient, consultant_name: str | None = None) -> list[dict]:
+def update_assessment_status(
+    client: MeridantClient, assessment_id: int, status: str
+) -> None:
+    """Update the status of an assessment. Valid values: in_progress, complete, archived."""
+    if status not in ("in_progress", "complete", "archived"):
+        raise ValueError(f"Invalid status: {status!r}")
+    client.write(
+        "UPDATE Assessment SET status = ? WHERE id = ?",
+        [status, int(assessment_id)],
+    )
+
+
+def load_findings(client: MeridantClient, assessment_id: int) -> dict:
+    """
+    Load persisted findings for an assessment.
+    Returns {"domain": [...], "capability": [...]}
+    """
+    res = client.query(
+        "SELECT * FROM AssessmentFinding WHERE assessment_id = ? ORDER BY finding_type, avg_score",
+        [int(assessment_id)],
+    )
+    rows = res.get("rows", [])
+    return {
+        "domain":     [r for r in rows if r.get("finding_type") == "domain"],
+        "capability": [r for r in rows if r.get("finding_type") == "capability"],
+    }
+
+
+def list_assessments(
+    client: MeridantClient,
+    consultant_name: str | None = None,
+    include_archived: bool = False,
+) -> list[dict]:
     """Return a summary list of assessments, newest first.
 
     If consultant_name is provided, only assessments belonging to that consultant
     are returned. Pass None to return all (admin use).
+    Archived assessments are excluded by default; pass include_archived=True to include them.
     """
     _ensure_framework_id_column(client)
+    archived_clause = "" if include_archived else "AND COALESCE(a.status, 'in_progress') != 'archived'"
     if consultant_name:
         res = client.query(
-            """
+            f"""
             SELECT a.id, c.client_name, a.engagement_name, a.use_case_name,
                    a.status, a.created_at, a.overall_score,
                    COALESCE(a.consultant_name, '') AS consultant_name,
@@ -677,13 +730,13 @@ def list_assessments(client: MeridantClient, consultant_name: str | None = None)
             FROM Assessment a
             LEFT JOIN Client c ON a.client_id = c.id
             LEFT JOIN Next_UseCase nu ON a.usecase_id = nu.id
-            WHERE COALESCE(a.consultant_name, '') = ?
+            WHERE COALESCE(a.consultant_name, '') = ? {archived_clause}
             ORDER BY a.created_at DESC
             """,
             [consultant_name],
         )
     else:
-        res = client.query("""
+        res = client.query(f"""
             SELECT a.id, c.client_name, a.engagement_name, a.use_case_name,
                    a.status, a.created_at, a.overall_score,
                    COALESCE(a.consultant_name, '') AS consultant_name,
@@ -691,6 +744,7 @@ def list_assessments(client: MeridantClient, consultant_name: str | None = None)
             FROM Assessment a
             LEFT JOIN Client c ON a.client_id = c.id
             LEFT JOIN Next_UseCase nu ON a.usecase_id = nu.id
+            WHERE 1=1 {archived_clause}
             ORDER BY a.created_at DESC
         """)
     return res.get("rows", [])
@@ -803,6 +857,244 @@ def save_respondent_responses(
             ))
     if rows:
         client.write_many(_RESP_INSERT_SQL, rows)
+
+
+def _ensure_survey_columns(client: MeridantClient) -> None:
+    """Add survey_token and survey_status columns to Assessment if missing. Memoized."""
+    global _survey_columns_ensured
+    if _survey_columns_ensured:
+        return
+    try:
+        client.write("ALTER TABLE Assessment ADD COLUMN survey_token TEXT", [])
+    except Exception:
+        pass
+    try:
+        client.write("ALTER TABLE Assessment ADD COLUMN survey_status TEXT", [])
+    except Exception:
+        pass
+    _survey_columns_ensured = True
+
+
+def _ensure_finding_survey_columns(client: MeridantClient) -> None:
+    """Add respondent_count and score_std_dev to AssessmentFinding if missing. Memoized."""
+    global _finding_survey_columns_ensured
+    if _finding_survey_columns_ensured:
+        return
+    try:
+        client.write("ALTER TABLE AssessmentFinding ADD COLUMN respondent_count INTEGER", [])
+    except Exception:
+        pass
+    try:
+        client.write("ALTER TABLE AssessmentFinding ADD COLUMN score_std_dev REAL", [])
+    except Exception:
+        pass
+    _finding_survey_columns_ensured = True
+
+
+def generate_survey_token(client: MeridantClient, assessment_id: int) -> str:
+    """Generate a UUID token, save to Assessment.survey_token + survey_status='open'. Return token."""
+    _ensure_survey_columns(client)
+    token = uuid.uuid4().hex
+    client.write(
+        "UPDATE Assessment SET survey_token = ?, survey_status = 'open' WHERE id = ?",
+        [token, int(assessment_id)],
+    )
+    return token
+
+
+def load_assessment_by_token(client: MeridantClient, token: str) -> dict | None:
+    """Return assessment + client info for a given survey_token. None if not found."""
+    _ensure_survey_columns(client)
+    res = client.query(
+        """
+        SELECT a.*, c.client_name, c.industry, c.sector, c.country
+        FROM Assessment a
+        LEFT JOIN Client c ON a.client_id = c.id
+        WHERE a.survey_token = ?
+        LIMIT 1
+        """,
+        [token],
+    )
+    rows = res.get("rows", [])
+    return rows[0] if rows else None
+
+
+def get_survey_respondents(client: MeridantClient, assessment_id: int) -> list[dict]:
+    """Return distinct respondents with their answer progress.
+
+    Returns [{"name": str, "role": str, "answered": int, "total": int}]
+    """
+    _ensure_respondent_columns(client)
+    # Total questions for this assessment (canonical rows)
+    total_res = client.query(
+        "SELECT COUNT(*) AS cnt FROM AssessmentResponse WHERE assessment_id = ? AND (respondent_name IS NULL OR respondent_name = '')",
+        [int(assessment_id)],
+    )
+    total_q = (total_res.get("rows") or [{}])[0].get("cnt") or 0
+
+    # Distinct respondents + their answer counts
+    resp_res = client.query(
+        """
+        SELECT respondent_name, respondent_role,
+               COUNT(*) AS answered
+        FROM AssessmentResponse
+        WHERE assessment_id = ?
+          AND respondent_name IS NOT NULL
+          AND respondent_name != ''
+        GROUP BY respondent_name, respondent_role
+        ORDER BY respondent_name
+        """,
+        [int(assessment_id)],
+    )
+    return [
+        {
+            "name":     r["respondent_name"],
+            "role":     r.get("respondent_role") or "",
+            "answered": r["answered"],
+            "total":    total_q,
+        }
+        for r in resp_res.get("rows", [])
+    ]
+
+
+_LIKERT_LABELS = {1: "Not Defined", 2: "Informal", 3: "Defined", 4: "Governed", 5: "Optimised"}
+
+
+def _ensure_synthesis_column(client: MeridantClient) -> None:
+    """Add respondent_synthesis column to Assessment if missing. Memoized."""
+    global _synthesis_column_ensured
+    if _synthesis_column_ensured:
+        return
+    try:
+        client.write("ALTER TABLE Assessment ADD COLUMN respondent_synthesis TEXT", [])
+    except Exception:
+        pass
+    _synthesis_column_ensured = True
+
+
+def save_respondent_synthesis(client: MeridantClient, assessment_id: int, synthesis: str) -> None:
+    """Persist the AI-generated stakeholder synthesis paragraph to the Assessment row."""
+    _ensure_synthesis_column(client)
+    client.write(
+        "UPDATE Assessment SET respondent_synthesis = ? WHERE id = ?",
+        [synthesis, int(assessment_id)],
+    )
+
+
+def get_respondent_voices(client: MeridantClient, assessment_id: int) -> list[dict]:
+    """Return individual respondent quotes with full attribution context.
+
+    Returns [{"respondent_name", "respondent_role", "capability_name", "domain", "score", "notes"}]
+    Only rows where notes is non-empty.  Used by AI summariser and narrative functions.
+    """
+    _ensure_respondent_columns(client)
+    res = client.query(
+        """
+        SELECT respondent_name, respondent_role, capability_name, domain, score, notes
+        FROM AssessmentResponse
+        WHERE assessment_id = ?
+          AND respondent_name IS NOT NULL
+          AND respondent_name != ''
+          AND notes IS NOT NULL
+          AND TRIM(notes) != ''
+        ORDER BY domain, capability_name, respondent_name
+        """,
+        [int(assessment_id)],
+    )
+    return res.get("rows", [])
+
+
+def aggregate_survey_rationale(client: MeridantClient, assessment_id: int) -> dict[int, str]:
+    """Collect all respondent rationale notes per capability.
+
+    Returns {capability_id: combined_text} where combined_text is a readable
+    concatenation of each respondent's score + notes for that capability,
+    e.g. "Sarah (3 — Defined): 'We have docs but they are inconsistent' |
+          James (1 — Not Defined): 'Nothing formal exists yet'"
+
+    Only includes rows where notes is non-empty.
+    Used to populate client_stated_context so AI functions are grounded in
+    what respondents actually said.
+    """
+    _ensure_respondent_columns(client)
+    res = client.query(
+        """
+        SELECT capability_id, respondent_name, score, notes
+        FROM AssessmentResponse
+        WHERE assessment_id = ?
+          AND respondent_name IS NOT NULL
+          AND respondent_name != ''
+          AND notes IS NOT NULL
+          AND TRIM(notes) != ''
+        ORDER BY capability_id, respondent_name
+        """,
+        [int(assessment_id)],
+    )
+
+    groups: dict[int, list[str]] = {}
+    for r in res.get("rows", []):
+        cid   = r["capability_id"]
+        name  = (r.get("respondent_name") or "").strip()
+        score = r.get("score")
+        notes = (r.get("notes") or "").strip()
+        if not notes:
+            continue
+        score_label = (
+            f"{score} — {_LIKERT_LABELS.get(score, str(score))}" if score else "?"
+        )
+        groups.setdefault(cid, []).append(f"{name} ({score_label}): \"{notes}\"")
+
+    return {cid: " | ".join(parts) for cid, parts in groups.items()}
+
+
+def close_survey(client: MeridantClient, assessment_id: int) -> None:
+    """Mark the survey as closed."""
+    _ensure_survey_columns(client)
+    client.write(
+        "UPDATE Assessment SET survey_status = 'closed' WHERE id = ?",
+        [int(assessment_id)],
+    )
+
+
+def aggregate_survey_responses(client: MeridantClient, assessment_id: int) -> dict[int, dict]:
+    """Average scores per capability_id across all respondent rows.
+
+    Returns {capability_id: {"avg_score": float, "std_dev": float, "respondent_count": int}}
+    Only considers rows where respondent_name IS NOT NULL and score IS NOT NULL.
+    """
+    _ensure_respondent_columns(client)
+    res = client.query(
+        """
+        SELECT capability_id, score, respondent_name
+        FROM AssessmentResponse
+        WHERE assessment_id = ?
+          AND respondent_name IS NOT NULL
+          AND respondent_name != ''
+          AND score IS NOT NULL
+        ORDER BY capability_id
+        """,
+        [int(assessment_id)],
+    )
+    rows = res.get("rows", [])
+
+    # Group scores by capability_id
+    groups: dict[int, list[float]] = {}
+    for r in rows:
+        cid = r["capability_id"]
+        groups.setdefault(cid, []).append(float(r["score"]))
+
+    result: dict[int, dict] = {}
+    for cid, scores in groups.items():
+        n = len(scores)
+        avg = sum(scores) / n
+        variance = sum((s - avg) ** 2 for s in scores) / n if n > 1 else 0.0
+        std_dev = math.sqrt(variance)
+        result[cid] = {
+            "avg_score":        round(avg, 2),
+            "std_dev":          round(std_dev, 2),
+            "respondent_count": n,
+        }
+    return result
 
 
 def reset_assessment_data(client: MeridantClient, assessment_id: int) -> None:

@@ -495,3 +495,95 @@ def q_scenario_impacts_capability(scenario_id: int, limit: int = 200) -> str:
     ORDER BY ic.impact_score DESC
     LIMIT {int(limit)};
     """
+
+
+# ── Client management helpers ─────────────────────────────────────────────────
+
+def get_clients_with_count(client) -> list:
+    """Return all clients with their assessment count."""
+    result = client.query(
+        """
+        SELECT c.id, c.client_name,
+               COALESCE(c.industry, '') AS industry,
+               COALESCE(c.sector, '')   AS sector,
+               COALESCE(c.country, '')  AS country,
+               COUNT(a.id) AS assessment_count
+        FROM Client c
+        LEFT JOIN Assessment a ON a.client_id = c.id
+        GROUP BY c.id
+        ORDER BY c.client_name
+        """,
+        [],
+    )
+    return result.get("rows", [])
+
+
+def update_client(
+    client,
+    client_id: int,
+    name: str,
+    industry: str,
+    sector: str,
+    country: str,
+) -> dict:
+    """Update an existing client record."""
+    return client.write(
+        "UPDATE Client SET client_name=?, industry=?, sector=?, country=? WHERE id=?",
+        [name, industry, sector, country, int(client_id)],
+    )
+
+
+def merge_clients(client, source_id: int, target_id: int) -> dict:
+    """
+    Merge source client into target: reassign all assessments then delete source.
+    Returns {"rowcount": N} or {"error": str}.
+    """
+    r1 = client.write(
+        "UPDATE Assessment SET client_id=? WHERE client_id=?",
+        [int(target_id), int(source_id)],
+    )
+    if r1.get("error"):
+        return r1
+    return client.write(
+        "DELETE FROM Client WHERE id=?",
+        [int(source_id)],
+    )
+
+
+def get_survey_progress(client, assessment_id: int) -> dict:
+    """Return survey progress summary for an assessment.
+
+    Returns {
+        "total_questions": int,
+        "respondents": [{"name", "role", "answered", "total"}]
+    }
+    """
+    total_res = client.query(
+        "SELECT COUNT(*) AS cnt FROM AssessmentResponse "
+        "WHERE assessment_id = ? AND (respondent_name IS NULL OR respondent_name = '')",
+        [int(assessment_id)],
+    )
+    total_q = (total_res.get("rows") or [{}])[0].get("cnt") or 0
+
+    resp_res = client.query(
+        """
+        SELECT respondent_name, respondent_role, COUNT(*) AS answered
+        FROM AssessmentResponse
+        WHERE assessment_id = ?
+          AND respondent_name IS NOT NULL
+          AND respondent_name != ''
+        GROUP BY respondent_name, respondent_role
+        ORDER BY respondent_name
+        """,
+        [int(assessment_id)],
+    )
+    respondents = [
+        {
+            "name":     r["respondent_name"],
+            "role":     r.get("respondent_role") or "",
+            "answered": r["answered"],
+            "total":    total_q,
+        }
+        for r in resp_res.get("rows", [])
+    ]
+    return {"total_questions": total_q, "respondents": respondents}

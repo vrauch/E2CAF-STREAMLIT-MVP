@@ -13,7 +13,7 @@ from src.assessment_store import (
     save_roadmap, load_roadmap,
     save_roadmap_progress, load_roadmap_progress,
     save_respondent_responses, load_respondent_sets,
-    reset_assessment_data,
+    reset_assessment_data, update_assessment_status,
 )
 from src.question_generator import generate_questions_for_capability
 from src.sql_templates import (
@@ -88,7 +88,15 @@ def _load_predefined_capabilities(client, usecase_id: int):
     res = client.query(f"""
         SELECT
             c.id            AS capability_id,
-            c.capability_name,
+            -- For NIST-style (GV.OC-01) and FinOps-style (FO-UUC-01) ID codes, prefer human-readable category name
+            CASE
+                WHEN c.capability_name GLOB '[A-Z][A-Z].[A-Z][A-Z]-[0-9][0-9]'
+                  OR c.capability_name GLOB '[A-Z][A-Z][A-Z].[A-Z][A-Z]-[0-9][0-9]'
+                  OR c.capability_name GLOB '[A-Z][A-Z]-[A-Z][A-Z][A-Z]-[0-9][0-9]'
+                THEN COALESCE(NULLIF(c.category,''), c.capability_name)
+                ELSE c.capability_name
+            END             AS capability_name,
+            c.capability_name AS capability_code,
             d.domain_name,
             sd.subdomain_name,
             uci.impact_weight,
@@ -113,13 +121,15 @@ def _load_predefined_capabilities(client, usecase_id: int):
 
     for r in rows:
         w = r.get("impact_weight") or 0
+        _code = r.get("capability_code") or ""
+        _code_suffix = f" [{_code}]" if _code and _code != r["capability_name"] else ""
         cap = CapabilityResult(
             capability_id=int(r["capability_id"]),
             capability_name=r["capability_name"],
             domain_name=r["domain_name"],
             subdomain_name=r["subdomain_name"],
             score=float(w) / 5.0,           # normalise impact as a proxy relevance score
-            rationale=f"Impact weight: {w}/5 | Target maturity: {r.get('avg_target_maturity', 3)}",
+            rationale=f"Impact weight: {w}/5 | Target maturity: {r.get('avg_target_maturity', 3)}{_code_suffix}",
         )
         # Attach target maturity as extra attribute for Step 2b
         cap.__dict__["avg_target_maturity"] = float(r.get("avg_target_maturity") or 3)
@@ -181,6 +191,7 @@ def _hydrate_session_from_db(data: dict) -> None:
 
     # Client & assessment header
     st.session_state.assessment_id       = a["id"]
+    st.session_state.assessment_status   = a.get("status", "in_progress") or "in_progress"
     st.session_state.client_name         = a.get("client_name", "")
     st.session_state.engagement_name     = a.get("engagement_name", "") or ""
     st.session_state.client_industry     = a.get("industry", "") or ""
@@ -299,6 +310,9 @@ def _hydrate_session_from_db(data: dict) -> None:
         st.session_state.roadmap_progress = load_roadmap_progress(_fw_client, a["id"])
     else:
         st.session_state.roadmap_progress = {}
+
+    # Restore respondent synthesis (persisted in Assessment.respondent_synthesis)
+    st.session_state["respondent_synthesis"] = a.get("respondent_synthesis") or None
 
     # ── Smart step detection — resume at the correct wizard step ──────────────
     # Determine where the assessment was interrupted based on what is saved in DB:
@@ -622,6 +636,7 @@ def render():
     st.session_state.setdefault("findings_narrative", None)
     st.session_state.setdefault("domain_targets", {})
     st.session_state.setdefault("assessment_id", None)
+    st.session_state.setdefault("assessment_status", "in_progress")
     st.session_state.setdefault("findings_saved", False)
     st.session_state.setdefault("roadmap_data", None)
     st.session_state.setdefault("roadmap_timeline_unit", "Sprints (2 wks)")
@@ -846,10 +861,11 @@ def render():
                 # ── Save assessment shell to DB immediately ────────────────
                 db = get_client()
                 # Clear stale data from any previously-loaded assessment before saving new one
-                st.session_state.findings_narrative = None
-                st.session_state.recommendations    = None
-                st.session_state.roadmap_data        = None
-                st.session_state.roadmap_progress    = {}
+                st.session_state.findings_narrative    = None
+                st.session_state.recommendations       = None
+                st.session_state.roadmap_data          = None
+                st.session_state.roadmap_progress      = {}
+                st.session_state["respondent_synthesis"] = None
                 st.session_state.assessment_id = save_assessment_shell(db, st.session_state)
 
                 st.success(
@@ -866,10 +882,11 @@ def render():
                 # ── Save assessment shell to DB immediately ────────────────
                 db = get_client()
                 # Clear stale data from any previously-loaded assessment before saving new one
-                st.session_state.findings_narrative = None
-                st.session_state.recommendations    = None
-                st.session_state.roadmap_data        = None
-                st.session_state.roadmap_progress    = {}
+                st.session_state.findings_narrative    = None
+                st.session_state.recommendations       = None
+                st.session_state.roadmap_data          = None
+                st.session_state.roadmap_progress      = {}
+                st.session_state["respondent_synthesis"] = None
                 st.session_state.assessment_id = save_assessment_shell(db, st.session_state)
                 st.session_state.completed_steps.add(1)
                 st.session_state.wizard_step = 2
@@ -923,12 +940,13 @@ def render():
                 # Clear all downstream session state
                 for _k in ("questions", "responses", "findings_narrative", "domain_targets",
                            "findings_saved", "responses_ai_scored", "recommendations",
-                           "roadmap_data", "respondent_sets"):
+                           "roadmap_data", "respondent_sets", "respondent_synthesis"):
                     if _k in ("questions",):
                         st.session_state[_k] = []
                     elif _k in ("responses", "domain_targets"):
                         st.session_state[_k] = {}
-                    elif _k in ("findings_narrative", "roadmap_data", "recommendations"):
+                    elif _k in ("findings_narrative", "roadmap_data", "recommendations",
+                                "respondent_synthesis"):
                         st.session_state[_k] = None
                     elif _k in ("findings_saved", "responses_ai_scored"):
                         st.session_state[_k] = False
@@ -1326,6 +1344,67 @@ def render():
                     "to Step 4 after your workshop."
                 )
 
+        # ── Survey share panel (only when questions exist + assessment saved) ──
+        _aid = st.session_state.get("assessment_id")
+        if _aid and st.session_state.questions:
+            with st.expander("📡 Share with Respondents (async survey)", expanded=False):
+                from src.assessment_store import (
+                    generate_survey_token, close_survey, get_survey_respondents,
+                    _ensure_survey_columns,
+                )
+                _db = get_client()
+                _ensure_survey_columns(_db)
+
+                # Load current survey state from DB
+                _arow = _db.query(
+                    "SELECT survey_token, survey_status FROM Assessment WHERE id = ?",
+                    [_aid],
+                ).get("rows", [{}])[0]
+                _token       = st.session_state.get("survey_token") or _arow.get("survey_token") or ""
+                _srv_status  = _arow.get("survey_status") or ""
+                if _token:
+                    st.session_state["survey_token"] = _token
+
+                _base_url = os.environ.get("MERIDANT_BASE_URL", "http://localhost:8501")
+
+                if not _token:
+                    if st.button("🔗 Share Survey Link", type="primary"):
+                        _token = generate_survey_token(_db, _aid)
+                        st.session_state["survey_token"] = _token
+                        st.rerun()
+                else:
+                    _survey_url = f"{_base_url}/?survey={_token}"
+                    st.text_input("Survey URL (share this link):", value=_survey_url, key="survey_url_display")
+                    st.caption("Copy and share this link with client stakeholders via email, Slack, or Teams.")
+
+                    _s_col1, _s_col2 = st.columns([2, 1])
+                    with _s_col1:
+                        _status_badge = "🟢 OPEN" if _srv_status == "open" else ("🔴 CLOSED" if _srv_status == "closed" else "🟢 OPEN")
+                        st.markdown(f"**Survey status:** {_status_badge}")
+                    with _s_col2:
+                        if _srv_status != "closed":
+                            if st.button("Close Survey ✓", key="close_survey_btn"):
+                                close_survey(_db, _aid)
+                                st.rerun()
+
+                    # Respondent progress
+                    _respondents = get_survey_respondents(_db, _aid)
+                    if _respondents:
+                        st.markdown(f"**Respondents ({len(_respondents)}):**")
+                        for _resp in _respondents:
+                            _pct   = int(_resp["answered"] / _resp["total"] * 100) if _resp["total"] else 0
+                            _done  = "✅" if _resp["answered"] >= _resp["total"] else ""
+                            _role  = f" — {_resp['role']}" if _resp['role'] else ""
+                            st.markdown(
+                                f"- **{_resp['name']}**{_role} &nbsp; "
+                                f"`{_resp['answered']}/{_resp['total']}` {_done}"
+                            )
+                    else:
+                        st.caption("No responses yet. Waiting for stakeholders…")
+
+                    if _srv_status == "closed":
+                        st.info("Survey is closed. Proceed to Step 4 to enter responses manually, or go to Step 5 to aggregate survey responses.")
+
         st.divider()
 
         _nav3 = _render_nav_row(
@@ -1366,29 +1445,8 @@ def render():
         responses = st.session_state.responses
 
         st.session_state.responses = responses
-        # ── Offline / multi-respondent upload ──
-        st.subheader("Upload - Offline / Multi-respondent response sheets")
-        st.caption(
-            "Upload one or more completed response templates from Step 3. "
-            "Each file represents one respondent. When multiple files are uploaded, "
-            "responses are synthesised by AI before scoring."
-        )
 
-        uploaded_files = st.file_uploader(
-            "📂 Upload Completed Response Sheets (CSV or Excel)",
-            type=["csv", "xlsx"],
-            accept_multiple_files=True,
-            help="Upload the Excel template from Step 3, completed by each respondent.",
-        )
-        # -- Manually input responses--
-        st.subheader("Manually Input Responses based on user feedback")
-        st.markdown(
-            "Expand a capability to see its questions. Answer each question by selecting a score or response."
-            "Alternatively, upload a completed CSV from Step 3 using the **Offline option** above. "
-            "Once you have answered enough questions, click **Submit Assessment** to save."
-        )
-
-        # Progress — manual input only (hidden when respondent sets are uploaded)
+        # ── Compute totals (needed by all sections) ────────────────────────────
         total = len(questions)
         answered = sum(
             1 for r in responses.values()
@@ -1396,131 +1454,233 @@ def render():
         )
         _has_uploads = bool(st.session_state.get("respondent_sets", []))
 
-        if not _has_uploads:
-            col_prog, col_save = st.columns([4, 1])
-            with col_prog:
-                st.progress(answered / total if total > 0 else 0)
-            with col_save:
-                _save_label = "No responses yet" if answered == 0 else "💾 Save Progress"
-                if st.button(
-                    _save_label,
-                    disabled=(answered == 0),
-                    help="Save responses captured so far — you can resume later from the Assessments page.",
-                ):
-                    if st.session_state.get("assessment_id"):
-                        with st.spinner("Saving…"):
-                            save_assessment(get_client(), st.session_state)
-                        st.success(f"Saved {answered} response(s).")
-            if answered == 0:
-                st.caption("No responses yet — expand a capability below to begin.")
-            else:
-                st.warning(f"{answered} response(s) saved out of {total} expected")
+        # ── Section 1: Async Survey Responses ─────────────────────────────────
+        _s4_aid = st.session_state.get("assessment_id")
+        _has_survey_respondents = False
+        _s4_survey_respondents = []
+        if _s4_aid:
+            from src.assessment_store import _ensure_survey_columns, get_survey_respondents
+            _s4_db = get_client()
+            _ensure_survey_columns(_s4_db)
+            _s4_arow = _s4_db.query(
+                "SELECT survey_token, survey_status FROM Assessment WHERE id = ?", [_s4_aid]
+            ).get("rows", [{}])[0]
+            _s4_survey_status = _s4_arow.get("survey_status") or ""
+            _s4_survey_token  = _s4_arow.get("survey_token") or ""
 
-        # Group questions by role → domain → capability
-        grouped = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-        for q in questions:
-            grouped[q["capability_role"]][q["domain"]][q["capability_name"]].append(q)
+            if _s4_survey_token:
+                st.markdown(
+                    "<div style='border:1px solid #BFDBFE;background:#EFF6FF;border-radius:8px;"
+                    "padding:14px 18px;margin-bottom:16px'>"
+                    "<div style='font-size:.8rem;font-weight:700;color:#1D4ED8;"
+                    "text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px'>"
+                    "📡 Method 1 — Async Survey Responses</div>",
+                    unsafe_allow_html=True,
+                )
+                _s4_survey_respondents = get_survey_respondents(_s4_db, _s4_aid)
+                _has_survey_respondents = bool(_s4_survey_respondents)
 
-        role_order = ["Core", "Upstream", "Downstream"]
+                if _has_survey_respondents:
+                    _completed = sum(1 for r in _s4_survey_respondents if r["answered"] >= r["total"])
+                    st.markdown(
+                        f"**{len(_s4_survey_respondents)} respondent(s)** have submitted survey responses "
+                        f"({_completed} complete). These will be aggregated automatically in Step 5."
+                    )
+                    for _resp in _s4_survey_respondents:
+                        _pct  = int(_resp["answered"] / _resp["total"] * 100) if _resp["total"] else 0
+                        _done = "✅" if _resp["answered"] >= _resp["total"] else f"{_pct}%"
+                        st.caption(f"• **{_resp['name']}** ({_resp.get('role', '—')}) — {_resp['answered']}/{_resp['total']} {_done}")
+                else:
+                    st.caption("Survey link has been shared but no responses received yet.")
 
-        widget_counter = 0
-        for role in role_order:
-            if role not in grouped:
-                continue
-            st.subheader(f"{role} Capabilities")
+                if _s4_survey_status == "open":
+                    st.caption("🟢 Survey is **open** — respondents can still submit.")
+                elif _s4_survey_status == "closed":
+                    st.caption("🔴 Survey is **closed** — responses locked.")
 
-            for domain, caps in sorted(grouped[role].items()):
-                st.markdown(f"#### {domain}")
+                st.markdown("</div>", unsafe_allow_html=True)
+                st.divider()
 
-                for cap_name, qs in sorted(caps.items()):
-                    with st.expander(f"**{cap_name}** ({qs[0]['subdomain']})", expanded=False):
-                        for q in qs:
-                            widget_counter += 1
-                            key = str(q["capability_id"]) + "|" + q["question"] + "|" + str(widget_counter)
-                            rtype = q["response_type"]
-                            st.markdown(f"**{q['question']}**")
-                            st.caption(q["guidance"])
+        # ── Section 2: Upload Offline / Multi-respondent sheets ───────────────
+        st.markdown(
+            "<div style='border:1px solid #D1D5DB;background:#F9FAFB;border-radius:8px;"
+            "padding:14px 18px;margin-bottom:4px'>"
+            "<div style='font-size:.8rem;font-weight:700;color:#374151;"
+            "text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px'>"
+            "📂 Method 2 — Upload Completed Response Sheets</div>"
+            "<div style='font-size:.85rem;color:#6B7280;margin-bottom:10px'>"
+            "Upload one or more completed response templates from Step 3. "
+            "Each file represents one respondent.</div>",
+            unsafe_allow_html=True,
+        )
 
-                            if rtype == "maturity_1_5":
-                                score = st.radio(
-                                    "Score",
-                                    options=[1, 2, 3, 4, 5],
-                                    format_func=lambda x: {
-                                        1: "1 — Not Defined",
-                                        2: "2 — Informal",
-                                        3: "3 — Defined",
-                                        4: "4 — Governed",
-                                        5: "5 — Optimized",
-                                    }[x],
-                                    index=None,
-                                    key=f"score_{key}",
-                                    horizontal=True,
-                                )
-                                notes = st.text_area("Notes (optional)", key=f"notes_{key}", height=60)
-                                if score is not None:
-                                    responses[key] = {
-                                        "capability_id": q["capability_id"],
-                                        "capability_name": cap_name,
-                                        "domain": domain,
-                                        "subdomain": q["subdomain"],
-                                        "capability_role": role,
-                                        "question": q["question"],
-                                        "response_type": rtype,
-                                        "score": score,
-                                        "answer": None,
-                                        "notes": notes,
-                                    }
+        uploaded_files = st.file_uploader(
+            "Upload CSV or Excel response sheets",
+            type=["csv", "xlsx"],
+            accept_multiple_files=True,
+            help="Upload the Excel template from Step 3, completed by each respondent.",
+            label_visibility="collapsed",
+        )
 
-                            elif rtype == "yes_no_evidence":
-                                answer = st.radio(
-                                    "Answer",
-                                    options=["Yes", "No", "Partial"],
-                                    index=None,
-                                    key=f"yn_{key}",
-                                    horizontal=True,
-                                )
-                                evidence = st.text_area("Evidence / Notes", key=f"ev_{key}", height=60)
-                                if answer is not None:
-                                    responses[key] = {
-                                        "capability_id": q["capability_id"],
-                                        "capability_name": cap_name,
-                                        "domain": domain,
-                                        "subdomain": q["subdomain"],
-                                        "capability_role": role,
-                                        "question": q["question"],
-                                        "response_type": rtype,
-                                        "score": None,
-                                        "answer": answer,
-                                        "notes": evidence,
-                                    }
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.divider()
 
-                            else:  # free_text / workshop
-                                notes = st.text_area(
-                                    "Discussion notes",
-                                    key=f"ft_{key}",
-                                    height=100,
-                                    placeholder="Capture what was discussed...",
-                                )
-                                score = st.select_slider(
-                                    "Agreed maturity score",
-                                    options=[1, 2, 3, 4, 5],
-                                    key=f"ws_{key}",
-                                )
-                                if notes.strip():
-                                    responses[key] = {
-                                        "capability_id": q["capability_id"],
-                                        "capability_name": cap_name,
-                                        "domain": domain,
-                                        "subdomain": q["subdomain"],
-                                        "capability_role": role,
-                                        "question": q["question"],
-                                        "response_type": rtype,
-                                        "score": score,
-                                        "answer": None,
-                                        "notes": notes,
-                                    }
+        # ── Section 3: Manual Input (collapsible) ─────────────────────────────
+        with st.expander("✏️ Method 3 — Enter Responses Manually", expanded=False):
+            st.caption(
+                "Use this for in-person workshops or when gathering responses verbally. "
+                "Optionally name the session so responses are attributed in the findings."
+            )
 
-                            st.divider()
+            _ws_col1, _ws_col2 = st.columns([3, 2])
+            with _ws_col1:
+                _workshop_focus = st.text_input(
+                    "Workshop / session name *(optional)*",
+                    placeholder="e.g. Leadership Workshop — 14 Apr",
+                    key="s4_workshop_focus",
+                )
+            with _ws_col2:
+                _workshop_group = st.text_input(
+                    "Group / attendees *(optional)*",
+                    placeholder="e.g. CTO, CISO, Engineering Lead",
+                    key="s4_workshop_group",
+                )
+
+            # Build respondent attribution from workshop fields (falls back to blank)
+            _ws_name = _workshop_focus.strip() or ""
+            _ws_role = _workshop_group.strip() or ""
+
+            if not _has_uploads:
+                col_prog, col_save = st.columns([4, 1])
+                with col_prog:
+                    st.progress(answered / total if total > 0 else 0)
+                with col_save:
+                    _save_label = "No responses yet" if answered == 0 else "💾 Save Progress"
+                    if st.button(
+                        _save_label,
+                        disabled=(answered == 0),
+                        help="Save responses captured so far — you can resume later from the Assessments page.",
+                    ):
+                        if st.session_state.get("assessment_id"):
+                            with st.spinner("Saving…"):
+                                save_assessment(get_client(), st.session_state)
+                            st.success(f"Saved {answered} response(s).")
+                if answered == 0:
+                    st.caption("No responses yet — expand a capability below to begin.")
+                else:
+                    st.warning(f"{answered} response(s) saved out of {total} expected")
+
+            # Group questions by role → domain → capability
+            grouped = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+            for q in questions:
+                grouped[q["capability_role"]][q["domain"]][q["capability_name"]].append(q)
+
+            role_order = ["Core", "Upstream", "Downstream"]
+
+            widget_counter = 0
+            for role in role_order:
+                if role not in grouped:
+                    continue
+                st.subheader(f"{role} Capabilities")
+
+                for domain, caps in sorted(grouped[role].items()):
+                    st.markdown(f"#### {domain}")
+
+                    for cap_name, qs in sorted(caps.items()):
+                        with st.expander(f"**{cap_name}** ({qs[0]['subdomain']})", expanded=False):
+                            for q in qs:
+                                widget_counter += 1
+                                key = str(q["capability_id"]) + "|" + q["question"] + "|" + str(widget_counter)
+                                rtype = q["response_type"]
+                                st.markdown(f"**{q['question']}**")
+                                st.caption(q["guidance"])
+
+                                if rtype == "maturity_1_5":
+                                    score = st.radio(
+                                        "Score",
+                                        options=[1, 2, 3, 4, 5],
+                                        format_func=lambda x: {
+                                            1: "1 — Not Defined",
+                                            2: "2 — Informal",
+                                            3: "3 — Defined",
+                                            4: "4 — Governed",
+                                            5: "5 — Optimized",
+                                        }[x],
+                                        index=None,
+                                        key=f"score_{key}",
+                                        horizontal=True,
+                                    )
+                                    notes = st.text_area("Notes (optional)", key=f"notes_{key}", height=60)
+                                    if score is not None:
+                                        responses[key] = {
+                                            "capability_id": q["capability_id"],
+                                            "capability_name": cap_name,
+                                            "domain": domain,
+                                            "subdomain": q["subdomain"],
+                                            "capability_role": role,
+                                            "question": q["question"],
+                                            "response_type": rtype,
+                                            "score": score,
+                                            "answer": None,
+                                            "notes": notes,
+                                            "respondent_name": _ws_name,
+                                            "respondent_role": _ws_role,
+                                        }
+
+                                elif rtype == "yes_no_evidence":
+                                    answer = st.radio(
+                                        "Answer",
+                                        options=["Yes", "No", "Partial"],
+                                        index=None,
+                                        key=f"yn_{key}",
+                                        horizontal=True,
+                                    )
+                                    evidence = st.text_area("Evidence / Notes", key=f"ev_{key}", height=60)
+                                    if answer is not None:
+                                        responses[key] = {
+                                            "capability_id": q["capability_id"],
+                                            "capability_name": cap_name,
+                                            "domain": domain,
+                                            "subdomain": q["subdomain"],
+                                            "capability_role": role,
+                                            "question": q["question"],
+                                            "response_type": rtype,
+                                            "score": None,
+                                            "answer": answer,
+                                            "notes": evidence,
+                                            "respondent_name": _ws_name,
+                                            "respondent_role": _ws_role,
+                                        }
+
+                                else:  # free_text / workshop
+                                    notes = st.text_area(
+                                        "Discussion notes",
+                                        key=f"ft_{key}",
+                                        height=100,
+                                        placeholder="Capture what was discussed...",
+                                    )
+                                    score = st.select_slider(
+                                        "Agreed maturity score",
+                                        options=[1, 2, 3, 4, 5],
+                                        key=f"ws_{key}",
+                                    )
+                                    if notes.strip():
+                                        responses[key] = {
+                                            "capability_id": q["capability_id"],
+                                            "capability_name": cap_name,
+                                            "domain": domain,
+                                            "subdomain": q["subdomain"],
+                                            "capability_role": role,
+                                            "question": q["question"],
+                                            "response_type": rtype,
+                                            "score": score,
+                                            "answer": None,
+                                            "notes": notes,
+                                            "respondent_name": _ws_name,
+                                            "respondent_role": _ws_role,
+                                        }
+
+                                st.divider()
 
         
 
@@ -1633,7 +1793,10 @@ def render():
                 st.rerun()
         
         st.divider()
-        _has_responses = answered > 0 or bool(st.session_state.get("respondent_sets", []))
+
+        # Submit is enabled when: manual answers entered, OR uploads present, OR survey respondents exist
+        # _has_survey_respondents was set in Section 1 above
+        _has_responses = answered > 0 or bool(st.session_state.get("respondent_sets", [])) or _has_survey_respondents
         _nav4 = _render_nav_row(
             {"label": "Back to Step 3",    "key": "s4_back",   "style": "outline-secondary"},
             {"label": "Submit Assessment", "key": "s4_submit", "style": "primary", "disabled": not _has_responses},
@@ -1645,8 +1808,8 @@ def render():
                 _rsets = st.session_state.get("respondent_sets", [])
                 _has_online = answered > 0
                 _has_uploads = len(_rsets) > 0
-                if not _has_online and not _has_uploads:
-                    st.error("Please answer at least one question or upload completed response sheets.")
+                if not _has_online and not _has_uploads and not _has_survey_respondents:
+                    st.error("Please answer at least one question, upload response sheets, or ensure survey responses have been submitted.")
                 else:
                     db = get_client()
                     # ── Multi-respondent synthesis ──
@@ -1692,6 +1855,81 @@ def render():
         )
 
         responses = st.session_state.responses
+
+        # ── Check for async survey respondents ──────────────────────────────
+        _aid5 = st.session_state.get("assessment_id")
+        _survey_respondents_agg = None  # {cap_id: {"avg_score", "std_dev", "respondent_count"}}
+        if _aid5:
+            from src.assessment_store import (
+                get_survey_respondents, aggregate_survey_responses,
+                _ensure_survey_columns,
+            )
+            _db5 = get_client()
+            _ensure_survey_columns(_db5)
+            _arow5 = _db5.query(
+                "SELECT survey_status FROM Assessment WHERE id = ?", [_aid5]
+            ).get("rows", [{}])[0]
+            _srv_status5 = _arow5.get("survey_status") or ""
+            _survey_resp5 = get_survey_respondents(_db5, _aid5)
+            if _survey_resp5:
+                _survey_respondents_agg = aggregate_survey_responses(_db5, _aid5)
+                if _survey_respondents_agg:
+                    n_resp = len(_survey_resp5)
+                    st.info(
+                        f"📡 **Multi-respondent survey detected** — {n_resp} respondent(s). "
+                        "Scores below are averaged across all respondents. "
+                        "Capabilities where respondents disagreed materially are flagged ⚠️."
+                    )
+                    # Build responses from aggregated survey scores + capability metadata
+                    _caps_res5 = _db5.query(
+                        "SELECT * FROM AssessmentCapability WHERE assessment_id = ?", [_aid5]
+                    ).get("rows", [])
+                    _qs_res5 = _db5.query(
+                        """SELECT capability_id, capability_name, domain, subdomain,
+                                  capability_role, question, response_type
+                           FROM AssessmentResponse
+                           WHERE assessment_id = ?
+                             AND (respondent_name IS NULL OR respondent_name = '')
+                           ORDER BY capability_id, id""",
+                        [_aid5],
+                    ).get("rows", [])
+                    # Load per-capability rationale from all respondents
+                    from src.assessment_store import aggregate_survey_rationale
+                    _rationale_map = aggregate_survey_rationale(_db5, _aid5)
+
+                    # Build a synthetic responses dict using averaged scores + combined rationale
+                    _cap_meta = {c["capability_id"]: c for c in _caps_res5}
+                    _synth_responses: dict = {}
+                    for q in _qs_res5:
+                        cid   = q["capability_id"]
+                        stats = _survey_respondents_agg.get(cid)
+                        if stats:
+                            _key = f"{cid}|{q['question']}"
+                            # Combine respondent count header with actual rationale text
+                            _combined_rationale = _rationale_map.get(cid, "")
+                            _notes = (
+                                f"[{stats['respondent_count']} respondents] {_combined_rationale}"
+                                if _combined_rationale
+                                else f"[{stats['respondent_count']} respondents — no rationale provided]"
+                            )
+                            _synth_responses[_key] = {
+                                "capability_id":   cid,
+                                "capability_name": q["capability_name"],
+                                "domain":          q["domain"],
+                                "subdomain":       q["subdomain"],
+                                "capability_role": q["capability_role"],
+                                "question":        q["question"],
+                                "response_type":   "maturity_1_5",
+                                "score":           stats["avg_score"],
+                                "answer":          None,
+                                "notes":           _notes,
+                            }
+                    if _synth_responses:
+                        responses = _synth_responses
+                        st.session_state.responses_ai_scored = True  # already numeric
+                        # Store rationale map for display in Step 5
+                        st.session_state["_survey_rationale_map"] = _rationale_map
+
         if not responses:
             st.warning("No responses found. Go back to Step 4.")
             if st.button("Back to Step 4"):
@@ -1764,7 +2002,7 @@ def render():
 
         # Capability scores
         cap_scores = (
-            df.groupby(["capability_role", "domain", "subdomain", "capability_name"])["score"]
+            df.groupby(["capability_id", "capability_role", "domain", "subdomain", "capability_name"])["score"]
             .mean()
             .reset_index()
             .rename(columns={"score": "avg_score"})
@@ -1777,6 +2015,18 @@ def render():
         cap_scores["risk"] = cap_scores["avg_score"].apply(
             lambda x: "🔴 High" if x < 2 else ("🟡 Medium" if x < 3 else "🟢 Low")
         )
+
+        # Merge respondent std_dev into cap_scores for disagreement display
+        if _survey_respondents_agg:
+            cap_scores["respondents"] = cap_scores["capability_id"].map(
+                lambda cid: (_survey_respondents_agg.get(cid) or {}).get("respondent_count")
+            )
+            cap_scores["std_dev"] = cap_scores["capability_id"].map(
+                lambda cid: (_survey_respondents_agg.get(cid) or {}).get("std_dev")
+            )
+            cap_scores["disagree"] = cap_scores["std_dev"].apply(
+                lambda s: "⚠️" if s is not None and s >= 1.0 else ""
+            )
 
         # Domain scores
         dom_scores = (
@@ -1801,6 +2051,7 @@ def render():
                     cap_scores=cap_scores.to_dict(orient="records"),
                     dom_scores=dom_scores.to_dict(orient="records"),
                     overall_score=overall,
+                    respondent_stats=_survey_respondents_agg,
                 )
                 st.session_state.findings_saved = True
             except Exception as e:
@@ -1836,13 +2087,106 @@ def render():
 
         # ── Capability scores by role ──
         st.subheader("Capability scores")
+        _has_disagree = _survey_respondents_agg and "disagree" in cap_scores.columns and cap_scores["disagree"].any()
+        if _has_disagree:
+            _disagree_count = int((cap_scores["disagree"] == "⚠️").sum())
+            st.caption(
+                f"⚠️ = high disagreement across respondents (σ ≥ 1.0) · {_disagree_count} capability(s) flagged"
+            )
         roles_present = [r for r in ["Core", "Upstream", "Downstream"] if r in cap_scores["capability_role"].values]
         tabs = st.tabs(roles_present)
 
         for tab, role in zip(tabs, roles_present):
             with tab:
                 df_role = cap_scores[cap_scores["capability_role"] == role].sort_values("avg_score")
-                st.dataframe(df_role, use_container_width=True)
+                # Show relevant columns — include disagree flag if survey data present
+                _display_cols = ["capability_name", "domain", "avg_score", "target", "gap"]
+                if _survey_respondents_agg and "disagree" in df_role.columns:
+                    _display_cols += ["respondents", "std_dev", "disagree"]
+                st.dataframe(df_role[_display_cols], use_container_width=True)
+
+        # ── Respondent voices (survey path only) ──────────────────────────────
+        _rationale_map = st.session_state.get("_survey_rationale_map") or {}
+        if _rationale_map:
+            st.divider()
+            with st.expander("💬 Respondent voices — what they said", expanded=False):
+                st.caption(
+                    "Direct quotes from survey respondents, grouped by capability. "
+                    "These are factored verbatim into the AI-generated narrative and recommendations."
+                )
+                # Merge with cap_scores so we can show domain/role context
+                _cap_rows = cap_scores[["capability_id", "capability_name", "domain",
+                                        "capability_role", "avg_score"]].to_dict(orient="records")
+                _cap_lookup = {int(r["capability_id"]): r for r in _cap_rows}
+                for cid, text in sorted(_rationale_map.items(),
+                                        key=lambda x: _cap_lookup.get(x[0], {}).get("avg_score", 99)):
+                    _meta = _cap_lookup.get(cid, {})
+                    _cap_label = _meta.get("capability_name", f"Capability {cid}")
+                    _domain    = _meta.get("domain", "")
+                    _score     = _meta.get("avg_score")
+                    _score_str = f"avg {_score:.1f}" if _score is not None else ""
+                    st.markdown(
+                        f"<div style='border-left:3px solid #2563EB;padding:6px 12px;"
+                        f"margin-bottom:10px;background:#F9FAFB;border-radius:4px'>"
+                        f"<div style='font-size:.72rem;color:#6B7280'>"
+                        f"{_domain} &nbsp;·&nbsp; {_score_str}</div>"
+                        f"<div style='font-weight:600;color:#0F2744;margin-bottom:4px'>{_cap_label}</div>"
+                        f"<div style='font-size:.85rem;color:#374151'>{text}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+        # ── Stakeholder perspectives synthesis (survey path only) ──────────────
+        _respondent_voices_list = []  # passed to generate_findings_narrative
+        if _survey_respondents_agg and _rationale_map:
+            st.divider()
+            st.subheader("🗣️ Stakeholder perspectives")
+
+            # Generate / retrieve synthesis
+            if not st.session_state.get("respondent_synthesis"):
+                with st.spinner("Synthesising stakeholder voices..."):
+                    from src.assessment_store import get_respondent_voices, save_respondent_synthesis
+                    from src.ai_client import summarize_respondent_voices
+                    try:
+                        _voices = get_respondent_voices(get_client(), _aid5)
+                        _respondent_voices_list = _voices
+                        if _voices:
+                            _synthesis = summarize_respondent_voices(
+                                voices=_voices,
+                                client_name=st.session_state.get("client_name", ""),
+                                use_case_name=st.session_state.use_case_name,
+                                client_industry=st.session_state.get("client_industry", ""),
+                                client_country=st.session_state.get("client_country", ""),
+                            )
+                            st.session_state["respondent_synthesis"] = _synthesis
+                            if _aid5:
+                                try:
+                                    save_respondent_synthesis(get_client(), _aid5, _synthesis)
+                                except Exception:
+                                    pass
+                    except Exception as _syn_err:
+                        st.session_state["respondent_synthesis"] = None
+                        st.warning(f"Could not generate stakeholder synthesis: {_syn_err}")
+            else:
+                # Load voices list for passing to narrative even if synthesis already cached
+                from src.assessment_store import get_respondent_voices
+                try:
+                    _respondent_voices_list = get_respondent_voices(get_client(), _aid5)
+                except Exception:
+                    _respondent_voices_list = []
+
+            _synthesis_text = st.session_state.get("respondent_synthesis")
+            if _synthesis_text:
+                st.markdown(
+                    f"<div style='background:#EFF6FF;border-left:4px solid #2563EB;"
+                    f"border-radius:6px;padding:14px 18px;margin-bottom:8px'>"
+                    f"<div style='font-size:.72rem;color:#2563EB;font-weight:600;"
+                    f"text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px'>"
+                    f"AI synthesis of respondent voices</div>"
+                    f"<div style='color:#0F2744;font-size:.92rem;line-height:1.6'>{_synthesis_text}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
 
         st.divider()
 
@@ -1882,6 +2226,7 @@ def render():
                         client_stated_context=_build_client_stated_context(
                             st.session_state.get("responses", {})
                         ),
+                        respondent_voices=_respondent_voices_list or None,
                     )
                     st.session_state.findings_narrative = narrative
                     # Persist to DB — overwritten each time a fresh version is generated
@@ -1953,6 +2298,7 @@ def render():
                       "assessment_id", "findings_saved",
                       "assessment_mode", "selected_usecase_id",
                       "roadmap_data", "responses_ai_scored", "recommendations",
+                      "respondent_synthesis",
                       "confirm_regen_narrative", "confirm_regen_recs", "confirm_regen_questions",
                       "confirm_rediscover", "show_questions_table"]:
                 if k in ["use_case_name", "intent_text", "client_name", "engagement_name",
@@ -1960,7 +2306,8 @@ def render():
                     st.session_state[k] = ""
                 elif k == "responses":
                     st.session_state[k] = {}
-                elif k in ("findings_narrative", "assessment_id", "roadmap_data", "recommendations"):
+                elif k in ("findings_narrative", "assessment_id", "roadmap_data",
+                           "recommendations", "respondent_synthesis"):
                     st.session_state[k] = None
                 elif k in ("findings_saved", "responses_ai_scored",
                            "confirm_regen_narrative", "confirm_regen_recs", "confirm_regen_questions",
@@ -2189,6 +2536,16 @@ def render():
                 if tier_filter != "All" else recs
             )
 
+            _TIER_ORDER = {"P1": 0, "P2": 1, "P3": 2}
+            _ROLE_ORDER_R = {"Core": 0, "Upstream": 1, "Downstream": 2}
+            filtered_recs = sorted(
+                filtered_recs,
+                key=lambda r: (
+                    _TIER_ORDER.get(r.get("priority_tier") or "", 9),
+                    _ROLE_ORDER_R.get(r.get("capability_role") or "", 9),
+                    -(r.get("gap") or 0),
+                ),
+            )
             tier_colours = {"P1": "🔴", "P2": "🟡", "P3": "🟢"}
             for rec in filtered_recs:
                 tier = rec.get("priority_tier", "P2")
@@ -2430,6 +2787,73 @@ def render():
                     {"label": "Roadmap (Excel)", "data": excel_bytes, "filename": f"Meridant_Insight_{_client_slug}_Roadmap.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
                 )
 
+                # ── Word / PPT full report exports ────────────────────────
+                try:
+                    from src.report_writer import generate_word_report
+                    from src.report_presenter import generate_pptx_report
+                    _word_ppt_available = True
+                except ImportError:
+                    _word_ppt_available = False
+
+                if _word_ppt_available:
+                    _cap_findings_6 = []
+                    for _, row_df in df.iterrows():
+                        _cap_findings_6.append({
+                            "capability_name": row_df.get("capability_name", ""),
+                            "domain": row_df.get("domain", ""),
+                            "capability_role": row_df.get("capability_role", ""),
+                            "avg_score": row_df.get("score"),
+                            "target_maturity": int(domain_targets.get(row_df.get("domain", ""), 3)),
+                            "gap": max(0, int(domain_targets.get(row_df.get("domain", ""), 3)) - (row_df.get("score") or 0)),
+                        })
+                    _narrative_6 = st.session_state.get("findings_narrative", "")
+                    _recs_6 = st.session_state.get("recommendations") or []
+                    _today_6 = __import__("datetime").date.today().isoformat()
+                    _rpt_col1, _rpt_col2 = st.columns(2)
+                    with _rpt_col1:
+                        try:
+                            _word_bytes = generate_word_report(
+                                client_name=st.session_state.get("client_name", ""),
+                                engagement_name=st.session_state.get("engagement_name", ""),
+                                use_case_name=st.session_state.use_case_name,
+                                consultant_name=st.session_state.get("authenticated_username", ""),
+                                findings_narrative=_narrative_6,
+                                dom_scores=dom_scores_list,
+                                cap_findings=_cap_findings_6,
+                                recommendations=_recs_6,
+                            )
+                            st.download_button(
+                                "⬇ Report (Word)",
+                                data=_word_bytes,
+                                file_name=f"Meridant_Insight_{_client_slug}_{_today_6}.docx",
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                use_container_width=True,
+                            )
+                        except Exception as _we:
+                            st.error(f"Word export failed: {_we}")
+                    with _rpt_col2:
+                        try:
+                            _pptx_bytes = generate_pptx_report(
+                                client_name=st.session_state.get("client_name", ""),
+                                engagement_name=st.session_state.get("engagement_name", ""),
+                                use_case_name=st.session_state.use_case_name,
+                                consultant_name=st.session_state.get("authenticated_username", ""),
+                                findings_narrative=_narrative_6,
+                                dom_scores=dom_scores_list,
+                                cap_findings=_cap_findings_6,
+                                recommendations=_recs_6,
+                                roadmap=roadmap,
+                            )
+                            st.download_button(
+                                "⬇ Readout (PowerPoint)",
+                                data=_pptx_bytes,
+                                file_name=f"Meridant_Insight_{_client_slug}_{_today_6}.pptx",
+                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                use_container_width=True,
+                            )
+                        except Exception as _pe:
+                            st.error(f"PowerPoint export failed: {_pe}")
+
                 # ── Progress Tracker ─────────────────────────────────────
                 st.divider()
                 st.markdown("### Roadmap Progress")
@@ -2584,6 +3008,20 @@ def render():
                                     st.error(f"Could not regenerate roadmap: {e}")
 
             st.divider()
+
+            # ── Mark Complete ─────────────────────────────────────────────────
+            _current_status = st.session_state.get("assessment_status", "in_progress")
+            _aid = st.session_state.get("assessment_id")
+            if _aid and _current_status == "in_progress" and st.session_state.get("findings_saved"):
+                _mc_col, _ = st.columns([2, 5])
+                with _mc_col:
+                    if st.button("✓ Mark Assessment Complete", type="primary", use_container_width=True):
+                        update_assessment_status(get_client(), _aid, "complete")
+                        st.session_state["assessment_status"] = "complete"
+                        st.success("Assessment marked as complete.")
+                        st.rerun()
+            elif _current_status == "complete":
+                st.caption("✓ This assessment is marked complete. Use **Assessments** to view or archive it.")
 
             # ── Navigation ────────────────────────────────────────────────────
             col_back, _ = st.columns([1, 3])

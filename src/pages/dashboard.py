@@ -180,7 +180,6 @@ def load_use_cases(_client, framework_id: int = 1):
     return r.get("rows", [])
 
 
-
 # ── render ────────────────────────────────────────────────────────────────────
 
 def render() -> None:
@@ -381,6 +380,7 @@ def render() -> None:
   .level-indicators { font-size:.75rem; color:#6B7280; }
   .level-badge  { font-family:'JetBrains Mono',monospace; font-size:.65rem; font-weight:700; padding:.25rem .6rem; border-radius:4px; display:inline-block; margin-bottom:.8rem; }
   .owner-badge  { background:#F3F4F6; border:1px solid #D1D5DB; border-radius:4px; padding:.2rem .5rem; font-size:.68rem; color:#6B7280; }
+
 </style>
 </head>
 <body class="p-3">
@@ -697,7 +697,7 @@ function renderCapabilities(sdId, color, sdName) {
   caps.forEach(cap => {
     const col = document.createElement('div');
     col.className = 'col-6 col-md-4 col-lg-3';
-    const isIdCode  = /^[A-Z]{2,3}\\.[A-Z]{2,4}-\\d{2}$/.test(cap.capability_name);
+    const isIdCode  = /^([A-Z]{2,3}\\.[A-Z]{2,4}-\\d{2}|[A-Z]{2}-[A-Z]{3}-\\d{2})$/.test(cap.capability_name);
     const cardLabel = (isIdCode && cap.category) ? cap.category : cap.capability_name;
     const cardIdBadge = isIdCode ? `<div class="cap-identifier">${cap.capability_name}</div>` : '';
     col.innerHTML = `<div class="cap-card" style="border-top:2px solid ${color}" onclick="openCapModal(${cap.id})">
@@ -739,7 +739,7 @@ function openCapModal(capId) {
   const levels = capLevelMap[capId] || [];
 
   const modalNameEl = document.getElementById('modal-cap-name');
-  const isIdCode = /^[A-Z]{2,3}\\.[A-Z]{2,4}-\\d{2}$/.test(cap.capability_name);
+  const isIdCode = /^([A-Z]{2,3}\\.[A-Z]{2,4}-\\d{2}|[A-Z]{2}-[A-Z]{3}-\\d{2})$/.test(cap.capability_name);
   if (isIdCode && cap.category) {
     modalNameEl.innerHTML = `${cap.category} <span style="font-size:.7rem;font-weight:400;color:#6B7280;margin-left:.4rem;font-family:monospace">${cap.capability_name}</span>`;
   } else {

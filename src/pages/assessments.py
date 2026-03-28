@@ -7,7 +7,7 @@ import math
 import streamlit as st
 
 from src.meridant_client import get_client
-from src.assessment_store import list_assessments, load_assessment
+from src.assessment_store import list_assessments, load_assessment, update_assessment_status
 from src.sql_templates import get_frameworks
 
 PAGE_SIZE = 15
@@ -19,8 +19,8 @@ def _get_fw_labels(db) -> dict[int, str]:
     return {r["id"]: r["framework_key"] for r in rows} if rows else {1: "MMTF"}
 
 # Column proportions — must match between header and data rows
-_COL_W = [0.4, 1.7, 1.7, 2.3, 1.1, 1.1, 0.65, 0.9, 1.1]
-_COL_HEADERS = ["ID", "Client", "Engagement", "Use Case", "Framework", "Status", "Score", "Created", ""]
+_COL_W = [0.4, 1.7, 1.7, 2.3, 1.1, 1.1, 0.65, 0.9, 0.75, 0.75]
+_COL_HEADERS = ["ID", "Client", "Engagement", "Use Case", "Framework", "Status", "Score", "Created", "", ""]
 
 _HDR_STYLE = (
     "margin:0;padding:2px 0 6px;font-family:'JetBrains Mono',monospace;font-size:.7rem;font-weight:400;"
@@ -58,6 +58,13 @@ def _hydrate_and_redirect(assessment_id: int) -> None:
     st.rerun()
 
 
+def _navigate_to_detail(assessment_id: int) -> None:
+    """Navigate to the read-only assessment detail page."""
+    st.session_state["_detail_assessment_id"] = assessment_id
+    st.session_state["_navigate_to"] = "Assessment Detail"
+    st.rerun()
+
+
 def _header() -> None:
     cols = st.columns(_COL_W)
     for col, label in zip(cols, _COL_HEADERS):
@@ -67,7 +74,7 @@ def _header() -> None:
 
 def _row(r: dict, fw_labels: dict) -> None:
     aid       = r["id"]
-    status    = r.get("status", "in_progress")
+    status    = r.get("status") or "in_progress"
     score     = r.get("overall_score")
     created   = (r.get("created_at") or "")[:10]
     client    = r.get("client_name") or "—"
@@ -83,16 +90,18 @@ def _row(r: dict, fw_labels: dict) -> None:
             'border-radius:999px;font-size:.7rem;font-weight:600;white-space:nowrap">'
             'Complete</span>'
         )
-        btn_label = "Open"
-        btn_type  = "secondary"
+    elif status == "archived":
+        badge = (
+            '<span style="background:#6B7280;color:#fff;padding:2px 9px;'
+            'border-radius:999px;font-size:.7rem;font-weight:600;white-space:nowrap">'
+            'Archived</span>'
+        )
     else:
         badge = (
             '<span style="background:#2563EB;color:#fff;padding:2px 9px;'
             'border-radius:999px;font-size:.7rem;font-weight:600;white-space:nowrap">'
             'In Progress</span>'
         )
-        btn_label = "Resume"
-        btn_type  = "primary"
 
     cols = st.columns(_COL_W)
     cols[0].markdown(f'<span style="font-size:.8rem;color:#9CA3AF">{aid}</span>', unsafe_allow_html=True)
@@ -103,9 +112,35 @@ def _row(r: dict, fw_labels: dict) -> None:
     cols[5].markdown(badge, unsafe_allow_html=True)
     cols[6].markdown(f'<span style="font-size:.8rem">{score_txt}</span>', unsafe_allow_html=True)
     cols[7].markdown(f'<span style="font-size:.78rem;color:#9CA3AF">{created}</span>', unsafe_allow_html=True)
+
+    # col[8] — View (all statuses)
     with cols[8]:
-        if st.button(btn_label, key=f"open_{aid}", type=btn_type):
-            _hydrate_and_redirect(aid)
+        if st.button("View", key=f"view_{aid}", type="secondary"):
+            _navigate_to_detail(aid)
+
+    # col[9] — Resume (in_progress) | Archive (complete) | — (archived)
+    with cols[9]:
+        if status == "in_progress":
+            if st.button("Resume", key=f"resume_{aid}", type="primary"):
+                _hydrate_and_redirect(aid)
+        elif status == "complete":
+            confirm_key = f"confirm_archive_{aid}"
+            if st.session_state.get(confirm_key):
+                # Confirm state — show Yes/No inline
+                ca, cb = st.columns(2)
+                with ca:
+                    if st.button("Yes", key=f"arch_yes_{aid}", type="primary"):
+                        update_assessment_status(get_client(), aid, "archived")
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+                with cb:
+                    if st.button("No", key=f"arch_no_{aid}"):
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+            else:
+                if st.button("Archive", key=f"arch_{aid}"):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
 
 
 def render() -> None:
@@ -113,7 +148,11 @@ def render() -> None:
     db   = get_client()
     fw_labels = _get_fw_labels(db)
     current_user = st.session_state.get("authenticated_username") or None
-    rows = list_assessments(db, consultant_name=current_user)
+
+    # Determine include_archived from session state (set by selectbox on prior render)
+    _status_val = st.session_state.get("af_st", "All")
+    _include_archived = (_status_val == "Archived")
+    rows = list_assessments(db, consultant_name=current_user, include_archived=_include_archived)
 
     if not rows:
         st.info("No assessments yet. Go to **Create Assessment** to start one.")
@@ -127,7 +166,7 @@ def render() -> None:
     with fc1:
         fw_filter = st.selectbox("Framework", ["All"] + all_fw, key="af_fw")
     with fc2:
-        status_filter = st.selectbox("Status", ["All", "In Progress", "Complete"], key="af_st")
+        status_filter = st.selectbox("Status", ["All", "In Progress", "Complete", "Archived"], key="af_st")
     with fc3:
         search = st.text_input(
             "Search", placeholder="Filter by client or engagement…", key="af_sq"
@@ -139,9 +178,11 @@ def render() -> None:
         filtered = [r for r in filtered
                     if fw_labels.get(r.get("framework_id") or 1, "Unknown") == fw_filter]
     if status_filter == "In Progress":
-        filtered = [r for r in filtered if r.get("status") == "in_progress"]
+        filtered = [r for r in filtered if (r.get("status") or "in_progress") == "in_progress"]
     elif status_filter == "Complete":
         filtered = [r for r in filtered if r.get("status") == "complete"]
+    elif status_filter == "Archived":
+        filtered = [r for r in filtered if r.get("status") == "archived"]
     if search.strip():
         term = search.strip().lower()
         filtered = [r for r in filtered if

@@ -1,7 +1,7 @@
 # CLAUDE.md — Meridant Matrix
 
 > Project briefing for Claude Code. Read this at the start of every session.
-> Maintained by: Vernon Rauch | Last updated: 2026-03-23
+> Maintained by: Vernon Rauch | Last updated: 2026-03-25
 
 ---
 
@@ -32,7 +32,7 @@ The platform supports:
 | DB client | `MeridantClient` in `src/meridant_client.py` — no ORM. `get_client()` singleton. Supports split mode (preferred) and legacy single-DB fallback. |
 | Environment | `.env` file with `MERIDANT_FRAMEWORKS_DB_PATH`, `MERIDANT_ASSESSMENTS_DB_PATH`, and `ANTHROPIC_API_KEY` |
 | Auth | `streamlit-authenticator==0.3.3` — YAML-based credential store (`auth_config.yaml`, bcrypt-hashed passwords, volume-mounted) |
-| Python | 3.11+ |
+| Python | 3.12 |
 
 ---
 
@@ -73,22 +73,29 @@ Applied consistently across all UI modules (`dashboard.py`, `roadmap.py`, `heatm
 ├── Dockerfile
 ├── docker-compose.yml
 ├── fly.toml                         ← Fly.io deployment config
-├── start.ps1                        ← Windows local Docker startup script
-├── deploy.ps1                       ← Full deploy: git push + fly deploy + framework DB upload (Windows)
-├── db-push.ps1 / db-push.sh        ← Upload framework or assessment DB to Fly.io (Windows/Unix)
-├── db-pull.ps1 / db-pull.sh        ← Download DBs from Fly.io to local (Windows/Unix)
+├── deploy.sh                        ← Full deploy: git push + fly deploy + framework DB upload
+├── db-push.sh                       ← Upload framework or assessment DB to Fly.io
+├── db-pull.sh                       ← Download DBs from Fly.io to local
+├── start.sh                         ← Container startup: materialises .env + auth_config.yaml from secrets
+├── setup.sh                         ← One-time setup: installs sqlite3, runs seed.sql + seed_frameworks.sql
+├── seed.sql                         ← Raw SQL seed for assessment DB
+├── seed_frameworks.sql              ← Raw SQL seed for framework DB
 ├── data/
 │   ├── meridant_frameworks.db       ← Framework IP: all Next_* tables (local master → pushed to Fly.io)
 │   └── meridant.db                  ← Assessment + client data (Fly.io master → pulled locally for review)
 ├── assets/
 │   └── architecture.png
 ├── scripts/
-│   ├── seed_test_assessments.py     ← Original seed script (legacy, uses AI — do not use)
-│   ├── seed_v3_assessments.py       ← Current seed script — 6 comprehensive assessments, no AI needed
-│   ├── seed_nist_csf2.py            ← NIST CSF 2 framework seed script (in development)
-│   ├── migrate_split_db.py          ← One-time migration: e2caf.db → meridant_frameworks.db + meridant.db ✅ done
-│   ├── migrate_multi_framework.py   ← Adds Next_Framework registry table + framework_id FKs + MMTF seed ✅ done
-│   └── repair_wal.py                ← SQLite WAL repair utility
+│   ├── seed_v3_assessments.py           ← Current seed script — 6 comprehensive assessments, no AI needed
+│   ├── seed_v2_assessments.py           ← Earlier seed script (superseded by v3)
+│   ├── seed_test_assessments.py         ← Original seed script (legacy, uses AI — do not use)
+│   ├── seed_upload_test.py              ← Upload/SFTP test seed
+│   ├── seed_nist_csf2.py                ← NIST CSF 2 framework seed script (in development)
+│   ├── migrate_multi_framework.py       ← Adds Next_Framework registry table + framework_id FKs + MMTF seed ✅ done
+│   ├── migrate_split_db.py              ← One-time migration: e2caf.db → meridant_frameworks.db + meridant.db ✅ done
+│   ├── migrate_remove_legacy_branding.py← Removes remaining E2CAF/TMM legacy branding references
+│   ├── generate_mmtf_descriptions.py    ← Generates AI descriptions for MMTF capabilities
+│   └── repair_wal.py                    ← SQLite WAL repair utility
 └── src/
     ├── meridant_client.py           ← SQLite client: MeridantClient (query, write, write_many). get_client() reads env vars.
     │                                   Split mode: opens meridant_frameworks.db, ATTACHes meridant.db as 'assessments'.
@@ -102,13 +109,16 @@ Applied consistently across all UI modules (`dashboard.py`, `roadmap.py`, `heatm
     ├── heatmap.py                   ← Maturity heatmap HTML + Excel export
     ├── roadmap.py                   ← Roadmap Gantt HTML + Excel export
     ├── recommendation_engine.py     ← build_recommendations(): DB context assembly + AI orchestration
+    ├── report_writer.py             ← Word document export (python-docx): 6-section .docx report ✅ done
+    ├── report_presenter.py          ← PowerPoint export (python-pptx): 6-slide .pptx deck ✅ done
     └── pages/
-        ├── dashboard.py             ← Framework overview dashboard (Bootstrap 5 dark)
-        ├── assessments.py           ← Assessment list: table view with Resume/Open, filters, pagination ✅ done
+        ├── dashboard.py             ← Framework overview dashboard + version history/change log (Bootstrap 5 light) ✅ 5.1 done
+        ├── assessments.py           ← Assessment list: table view with View/Resume/Archive buttons, filters, pagination ✅ done
+        ├── assessment_detail.py     ← Assessment detail/view mode: 4 tabs (Exec Summary, Domain Findings, Recs, Export) ✅ done
         ├── create_assessment.py     ← 6-step assessment wizard (primary workflow)
         ├── simulation.py            ← Scenario impact simulation (partial)
         ├── usecase_workspace.py     ← Use case management
-        ├── admin_users.py           ← User management UI (admin-only: add/remove users, change passwords, bcrypt in-app)
+        ├── admin_users.py           ← Administration UI: Users tab (add/remove/password) + Clients tab (add/edit/merge) ✅ done
         └── architecture.py          ← Architecture page stub
 ```
 
@@ -487,23 +497,25 @@ Each assessment has: 3 questions per capability, 8 gap recommendations, executiv
 - UC 32 (Datacenter Transformation): 6 domains, all caps (Security=18, Applications=4, Data=3, People=3, + 2 others)
 
 ### Pending Work
-- **Priority 2.3** — Status management: `in_progress` → `complete` → `archived` transitions; "Mark Complete" button at Step 6; archived filter in list
-- **Priority 2.4** — Assessment detail/view mode: read-only Bootstrap HTML view of findings/recommendations/roadmap
 - `src/pages/simulation.py` — impact heatmap (domain × capability grid). `Next_ScenarioImpactCapability` is empty; `Next_ScenarioCapabilityChange` has data
 - `Next_ValueTheme` table is empty — value theme assignment for roadmap steps not yet implemented
-- Dashboard awareness of completed assessments — summary widget not yet built
 - Roadmap persistence to DB (currently session-only)
-- **Priority 4.1** — Word document export (`python-docx`)
-- **Priority 4.2** — Executive Readout PowerPoint (`python-pptx`) — cover, exec summary, heatmap, top gaps, roadmap, next steps
 - **Priority 8.3** — `Next_*` → `Framework_*` table rename (highest-effort part of Priority 8, still pending)
-- NIST CSF 2 framework seed (`scripts/seed_nist_csf2.py`) — in development; `Next_Framework` registry is ready to receive it
 
-### Completed Since Last CLAUDE.md Update (2026-03-13 → 2026-03-20)
+### Completed Since Last CLAUDE.md Update (2026-03-13 → 2026-03-25)
 - **Priority 2.1 ✅** — `src/pages/assessments.py` live: table view, framework/status/text filters, pagination (15/page), Resume/Open buttons
 - **Priority 2.2 ✅** — Resume assessment: `_hydrate_and_redirect()` in `assessments.py` clears stale session state, calls `_hydrate_session_from_db()`, loads recommendations, navigates to wizard at correct step
+- **Priority 2.3 ✅** — Assessment status management: `update_assessment_status()` in `assessment_store.py`; split action buttons in `assessments.py` (View + Resume/Archive); Archived badge + filter; confirm-before-archive pattern; `load_findings()` helper added
+- **Priority 2.4 ✅** — Assessment detail page: `src/pages/assessment_detail.py` — 4 tabs (Executive Summary, Domain Findings, Recommendations, Export); routed via `_HIDDEN_PAGES` in `app.py`; loads narrative, findings, recommendations from DB
+- **Priority 3.1 ✅** — Client management tab in Admin: `_render_clients_tab()` in `admin_users.py`; list with inline edit + merge + add client; `get_clients_with_count`, `update_client`, `merge_clients` helpers in `sql_templates.py`
+- **Priority 4.1 ✅** — Word document export: `src/report_writer.py` — 6 sections (cover, exec summary, domain findings, cap gap analysis, recommendations, appendix) using `python-docx`; integrated in Step 6 export panel + assessment detail Export tab
+- **Priority 4.2 ✅** — PowerPoint export: `src/report_presenter.py` — 6 slides (cover, exec summary, heatmap, top gaps, roadmap, next steps) using `python-pptx`; integrated in Step 6 + assessment detail
+- **Priority 5.1 ✅** — Framework version history + change log in dashboard: `load_framework_versions()` + `load_change_records()` loaders; version chip, version history table, change log table rendered below domain grid; shown for MMTF (4 versions, 38 change records), note shown for other frameworks
+- **NIST CSF 2.0 ✅** — Full framework seeded via `scripts/seed_nist_csf2.py`: 106 subcategories across 6 functions and 22 categories; NIST display name fix in `_load_predefined_capabilities` and `analyze_use_case_readonly` (SQLite GLOB pattern to substitute category names for ID codes); 3 NIST use cases seeded
+- **FinOps Foundation ✅** — Full framework seeded via `scripts/seed_finops_framework.py`: domains, capabilities, use cases; `--use-cases-only` flag added; 3 FinOps use cases seeded
 - **Priority 8.1 ✅** — DB split complete: `scripts/migrate_split_db.py` copied `Next_*` → `meridant_frameworks.db`, `Assessment*/Client` → `meridant.db`
 - **Priority 8.2 ✅ (partial)** — `tmm_client.py` → `meridant_client.py`, `TMMClient` → `MeridantClient`; `.env` vars updated to `MERIDANT_FRAMEWORKS_DB_PATH` + `MERIDANT_ASSESSMENTS_DB_PATH`; remaining rename tasks (page titles, export filenames) are still pending
-- **Priority 8.4 ✅** — Sync scripts in place: `deploy.ps1`, `db-push.ps1`, `db-pull.ps1`, `db-push.sh`, `db-pull.sh` all committed. `deploy.ps1` does full deploy (git + fly deploy + framework DB upload). `db-push` scripts support `--frameworks`/`--assessments`/`--both`/`--dry-run` flags with destructive confirmation for assessment DB.
+- **Priority 8.4 ✅** — Sync scripts in place: `deploy.sh`, `db-push.sh`, `db-pull.sh` committed. `deploy.sh` does full deploy (git + fly deploy + framework DB upload) with `--skip-db` / `--skip-code` flags. `db-push.sh` supports `--frameworks`/`--assessments`/`--both`/`--dry-run` with destructive confirmation for assessment DB.
 - **Multi-framework foundation ✅** — `scripts/migrate_multi_framework.py`: added `Next_Framework` registry, seeded MMTF (framework_id=1, labels Pillar/Domain/Capability), added `framework_id` FK to all content tables and `Assessment`
 
 ---
@@ -563,11 +575,12 @@ docker compose exec app python scripts/seed_v3_assessments.py          # idempot
 docker compose exec app python scripts/seed_v3_assessments.py --clean  # remove + re-seed
 docker compose exec app python scripts/migrate_multi_framework.py       # idempotent — safe to re-run
 
-# Deploy to Fly.io (Windows)
-.\deploy.ps1                   # git commit + push + fly deploy + push framework DB
-.\deploy.ps1 -SkipDb           # code only (no DB upload)
-.\db-push.ps1 -Frameworks      # push framework DB only (safe, no deploy)
-.\db-pull.ps1                  # pull both DBs from Fly.io to local
+# Deploy to Fly.io
+./deploy.sh                    # git commit + push + fly deploy + push framework DB
+./deploy.sh --skip-db          # code only (no DB upload)
+./deploy.sh --skip-code        # DB upload only, skip git + fly deploy
+./db-push.sh --frameworks      # push framework DB only (safe, no deploy)
+./db-pull.sh                   # pull both DBs from Fly.io to local
 ```
 
 **Important:** `docker compose restart` does NOT pick up code changes — it reuses the cached image. Always use `docker compose up --build`.
@@ -789,22 +802,18 @@ Rename all `Next_*` tables to `Framework_*` in `meridant_frameworks.db`, then up
 
 Sync scripts committed to repo. Use these instead of raw `fly ssh sftp` commands:
 
-```powershell
-# Windows
-.\deploy.ps1                          # git push + fly deploy + framework DB upload (full deploy)
-.\deploy.ps1 -SkipDb                  # code deploy only
-.\deploy.ps1 -SkipCode                # framework DB upload only
-.\db-push.ps1 -Frameworks             # push framework DB only (safe)
-.\db-push.ps1 -Assessments            # push assessment DB (DESTRUCTIVE — requires YES confirmation)
-.\db-pull.ps1                         # pull both DBs from Fly.io to local
-.\db-pull.ps1 -Frameworks             # pull framework DB only
-```
-
 ```bash
-# Unix/Mac
-./db-push.sh --frameworks             # push framework DB only
-./db-push.sh --assessments            # push assessment DB (DESTRUCTIVE)
-./db-pull.sh                          # pull both DBs
+./deploy.sh                           # git push + fly deploy + framework DB upload (full deploy)
+./deploy.sh --skip-db                 # code deploy only
+./deploy.sh --skip-code               # framework DB upload only
+./db-push.sh --frameworks             # push framework DB only (safe)
+./db-push.sh --assessments            # push assessment DB (DESTRUCTIVE — requires YES confirmation)
+./db-push.sh --both                   # push both DBs (DESTRUCTIVE)
+./db-push.sh --dry-run                # preview without uploading
+./db-pull.sh                          # pull both DBs from Fly.io to local
+./db-pull.sh --frameworks             # pull framework DB only
+./db-pull.sh --assessments            # pull assessment DB only
+./db-pull.sh --dry-run                # preview without downloading
 ```
 
 **Convention:** Never push local assessment data up to Fly.io without `YES` confirmation. Framework DB always flows local → Fly.io. Assessment DB always flows Fly.io → local. Never commit either DB file to git.
@@ -945,7 +954,7 @@ Meridant is the master brand. All product and capability names are sub-brands un
 |---|---|---|
 | **Meridant Matrix** | The platform — the full Streamlit application | `app.py` + all pages |
 | **Meridant Index** | The assessment engine — capability scoring, question generation, gap analysis, recommendations | `recommendation_engine.py` + `create_assessment.py` wizard |
-| **Meridant Insight** | Reporting and visualisation — heatmaps, Gantt charts, narrative exports | `heatmap.py` + `roadmap.py` + planned `report_writer.py` |
+| **Meridant Insight** | Reporting and visualisation — heatmaps, Gantt charts, narrative exports | `heatmap.py` + `roadmap.py` + `report_writer.py` + `report_presenter.py` |
 | **Meridant Benchmarks** | The framework and model library — E2CAF today, multi-framework in future | `meridant_frameworks.db` + `Framework_*` tables |
 | **Meridant Studio** | Configuration and design workspace — framework authoring, use case management | `usecase_workspace.py` + planned framework admin panel |
 
